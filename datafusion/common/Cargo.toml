@@ -80,7 +80,18 @@ itertools = { workspace = true }
 libc = "0.2.180"
 log = { workspace = true }
 object_store = { workspace = true, optional = true }
-parquet = { workspace = true, optional = true, default-features = true }
+parquet = { workspace = true, optional = true, default-features = false, features = [
+    "arrow",
+    "async",
+    "object_store",
+    "snap",
+    "brotli",
+    "flate2-zlib-rs",
+    "lz4",
+    "zstd",
+    "base64",
+    "simdutf8",
+] }
 paste = { workspace = true }
 recursive = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
@@ -88,6 +99,9 @@ tokio = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = "1.1.0"
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+ahash = { workspace = true, features = ["runtime-rng"] }
 
 [dev-dependencies]
 chrono = { workspace = true }
