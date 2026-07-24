@@ -62,16 +62,18 @@ datafusion-expr = { workspace = true, default-features = false }
 datafusion-physical-expr-common = { workspace = true, default-features = false }
 futures = { workspace = true }
 log = { workspace = true }
-object_store = { workspace = true, features = ["fs"] }
+object_store = { workspace = true }
 parking_lot = { workspace = true }
 parquet = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
-rand = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }
 url = { workspace = true }
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+object_store = { workspace = true, features = ["fs"] }
+rand = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
