@@ -78,6 +78,7 @@ jobs:
         env:
           RUSTFLAGS: -C debuginfo=none
         run: |
+          node --test datafusion/wasmtest/tests/browser-server.test.mjs
           node datafusion/wasmtest/tests/browser-server.mjs > browser-server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT

@@ -30,7 +30,10 @@ const port = Number.parseInt(process.env.PORT ?? "9876", 10);
 function setCorsHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", "*");
   response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Range, If-Range");
+  response.setHeader(
+    "Access-Control-Allow-Headers",
+    "Range, If-Range, User-Agent",
+  );
   response.setHeader(
     "Access-Control-Expose-Headers",
     "Accept-Ranges, Content-Encoding, Content-Length, Content-Range, ETag",
