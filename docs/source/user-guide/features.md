@@ -19,6 +19,9 @@
 
 # Features
 
+See [WebAssembly browser profile](./wasm.md) for the narrower set of
+capabilities tested on `wasm32-unknown-unknown`.
+
 ## General
 
 - [x] SQL Parser
