@@ -53,7 +53,7 @@ done
 package_universes="$(
   cargo tree -p datafusion --target "$target" --locked \
     --prefix none -e normal,build --format '{p}' |
-    sed 's/ (\\*)$//' |
+    sed 's/ (\*)$//' |
     LC_ALL=C sort -u
 )"
 for package in arrow parquet object_store; do
