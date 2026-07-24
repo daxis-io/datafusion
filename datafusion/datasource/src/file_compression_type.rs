@@ -28,12 +28,23 @@ use datafusion_common::parsers::CompressionTypeVariant::{self, *};
 use async_compression::tokio::bufread::{
     BzDecoder as AsyncBzDecoder, BzEncoder as AsyncBzEncoder,
     GzipDecoder as AsyncGzDecoder, GzipEncoder as AsyncGzEncoder,
+};
+#[cfg(all(
+    feature = "compression",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+use async_compression::tokio::bufread::{
     XzDecoder as AsyncXzDecoder, XzEncoder as AsyncXzEncoder,
     ZstdDecoder as AsyncZstdDecoer, ZstdEncoder as AsyncZstdEncoder,
 };
 
 #[cfg(feature = "compression")]
-use async_compression::tokio::write::{BzEncoder, GzipEncoder, XzEncoder, ZstdEncoder};
+use async_compression::tokio::write::{BzEncoder, GzipEncoder};
+#[cfg(all(
+    feature = "compression",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+use async_compression::tokio::write::{XzEncoder, ZstdEncoder};
 use bytes::Bytes;
 #[cfg(feature = "compression")]
 use bzip2::read::MultiBzDecoder;
@@ -43,14 +54,27 @@ use futures::StreamExt;
 #[cfg(feature = "compression")]
 use futures::TryStreamExt;
 use futures::stream::BoxStream;
-#[cfg(feature = "compression")]
+#[cfg(all(
+    feature = "compression",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 use liblzma::read::XzDecoder;
 use object_store::buffered::BufWriter;
 use tokio::io::AsyncWrite;
 #[cfg(feature = "compression")]
 use tokio_util::io::{ReaderStream, StreamReader};
-#[cfg(feature = "compression")]
+#[cfg(all(
+    feature = "compression",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
 use zstd::Decoder as ZstdDecoder;
+
+#[cfg(all(feature = "compression", target_arch = "wasm32", target_os = "unknown"))]
+fn target_unavailable(operation: &str, codec: &str) -> DataFusionError {
+    DataFusionError::NotImplemented(format!(
+        "{operation} with {codec} compression is unavailable on target wasm32-unknown-unknown"
+    ))
+}
 
 /// Readable file compression type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,14 +160,36 @@ impl FileCompressionType {
             BZIP2 => ReaderStream::new(AsyncBzEncoder::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             XZ => ReaderStream::new(AsyncXzEncoder::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             ZSTD => ReaderStream::new(AsyncZstdEncoder::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            XZ => {
+                return Err(target_unavailable("stream compression", "xz"));
+            }
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            ZSTD => {
+                return Err(target_unavailable("stream compression", "zstd"));
+            }
             #[cfg(not(feature = "compression"))]
             GZIP | BZIP2 | XZ | ZSTD => {
                 return Err(DataFusionError::NotImplemented(
@@ -191,20 +237,45 @@ impl FileCompressionType {
                 }
                 None => Box::new(BzEncoder::new(w)),
             },
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             XZ => match compression_level {
                 Some(level) => {
                     Box::new(XzEncoder::with_quality(w, Level::Precise(level as i32)))
                 }
                 None => Box::new(XzEncoder::new(w)),
             },
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             ZSTD => match compression_level {
                 Some(level) => {
                     Box::new(ZstdEncoder::with_quality(w, Level::Precise(level as i32)))
                 }
                 None => Box::new(ZstdEncoder::new(w)),
             },
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            XZ => {
+                return Err(target_unavailable("asynchronous writer compression", "xz"));
+            }
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            ZSTD => {
+                return Err(target_unavailable(
+                    "asynchronous writer compression",
+                    "zstd",
+                ));
+            }
             #[cfg(not(feature = "compression"))]
             GZIP | BZIP2 | XZ | ZSTD => {
                 // compression_level is not used when compression feature is disabled
@@ -236,14 +307,36 @@ impl FileCompressionType {
             BZIP2 => ReaderStream::new(AsyncBzDecoder::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             XZ => ReaderStream::new(AsyncXzDecoder::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             ZSTD => ReaderStream::new(AsyncZstdDecoer::new(StreamReader::new(s)))
                 .map_err(DataFusionError::from)
                 .boxed(),
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            XZ => {
+                return Err(target_unavailable("stream decompression", "xz"));
+            }
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            ZSTD => {
+                return Err(target_unavailable("stream decompression", "zstd"));
+            }
             #[cfg(not(feature = "compression"))]
             GZIP | BZIP2 | XZ | ZSTD => {
                 return Err(DataFusionError::NotImplemented(
@@ -264,13 +357,35 @@ impl FileCompressionType {
             GZIP => Box::new(MultiGzDecoder::new(r)),
             #[cfg(feature = "compression")]
             BZIP2 => Box::new(MultiBzDecoder::new(r)),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             XZ => Box::new(XzDecoder::new_multi_decoder(r)),
-            #[cfg(feature = "compression")]
+            #[cfg(all(
+                feature = "compression",
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))]
             ZSTD => match ZstdDecoder::new(r) {
                 Ok(decoder) => Box::new(decoder),
                 Err(e) => return Err(DataFusionError::External(Box::new(e))),
             },
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            XZ => {
+                return Err(target_unavailable("reader decompression", "xz"));
+            }
+            #[cfg(all(
+                feature = "compression",
+                target_arch = "wasm32",
+                target_os = "unknown"
+            ))]
+            ZSTD => {
+                return Err(target_unavailable("reader decompression", "zstd"));
+            }
             #[cfg(not(feature = "compression"))]
             GZIP | BZIP2 | XZ | ZSTD => {
                 return Err(DataFusionError::NotImplemented(

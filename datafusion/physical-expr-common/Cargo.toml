@@ -50,3 +50,6 @@ hashbrown = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+ahash = { workspace = true, features = ["runtime-rng"] }

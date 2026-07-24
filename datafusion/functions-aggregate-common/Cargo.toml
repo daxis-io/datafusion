@@ -47,6 +47,9 @@ datafusion-common = { workspace = true }
 datafusion-expr-common = { workspace = true }
 datafusion-physical-expr-common = { workspace = true }
 
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+ahash = { workspace = true, features = ["runtime-rng"] }
+
 [dev-dependencies]
 criterion = { workspace = true }
 rand = { workspace = true }

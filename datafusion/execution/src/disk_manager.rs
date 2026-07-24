@@ -17,18 +17,27 @@
 
 //! [`DiskManager`]: Manages files generated during query execution
 
-use datafusion_common::{
-    DataFusionError, Result, config_err, resources_datafusion_err, resources_err,
-};
+use datafusion_common::{DataFusionError, Result, config_err};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use datafusion_common::{resources_datafusion_err, resources_err};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use log::debug;
 use parking_lot::Mutex;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use rand::{Rng, rng};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tempfile::{Builder, NamedTempFile, TempDir};
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use datafusion_common::human_readable_size;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+type LocalDirectories = Vec<Arc<TempDir>>;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+type LocalDirectories = ();
 
 pub const DEFAULT_MAX_TEMP_DIRECTORY_SIZE: u64 = 100 * 1024 * 1024 * 1024; // 100GB
 
@@ -45,7 +54,16 @@ pub struct DiskManagerBuilder {
 impl Default for DiskManagerBuilder {
     fn default() -> Self {
         Self {
-            mode: DiskManagerMode::OsTmpDirectory,
+            mode: {
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+                {
+                    DiskManagerMode::OsTmpDirectory
+                }
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                {
+                    DiskManagerMode::Disabled
+                }
+            },
             max_temp_directory_size: DEFAULT_MAX_TEMP_DIRECTORY_SIZE,
         }
     }
@@ -73,12 +91,14 @@ impl DiskManagerBuilder {
     /// Create a DiskManager given the builder
     pub fn build(self) -> Result<DiskManager> {
         match self.mode {
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DiskManagerMode::OsTmpDirectory => Ok(DiskManager {
                 local_dirs: Mutex::new(Some(vec![])),
                 max_temp_directory_size: self.max_temp_directory_size,
                 used_disk_space: Arc::new(AtomicU64::new(0)),
                 active_files_count: Arc::new(AtomicUsize::new(0)),
             }),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DiskManagerMode::Directories(conf_dirs) => {
                 let local_dirs = create_local_dirs(&conf_dirs)?;
                 debug!(
@@ -90,6 +110,13 @@ impl DiskManagerBuilder {
                     used_disk_space: Arc::new(AtomicU64::new(0)),
                     active_files_count: Arc::new(AtomicUsize::new(0)),
                 })
+            }
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            DiskManagerMode::OsTmpDirectory | DiskManagerMode::Directories(_) => {
+                Err(DataFusionError::NotImplemented(
+                    "Filesystem-backed spilling is unavailable on target wasm32-unknown-unknown"
+                        .to_owned(),
+                ))
             }
             DiskManagerMode::Disabled => Ok(DiskManager {
                 local_dirs: Mutex::new(None),
@@ -165,7 +192,7 @@ pub struct DiskManager {
     ///
     /// If `Some(vec![])` a new OS specified temporary directory will be created
     /// If `None` an error will be returned (configured not to spill)
-    local_dirs: Mutex<Option<Vec<Arc<TempDir>>>>,
+    local_dirs: Mutex<Option<LocalDirectories>>,
     /// The maximum amount of data (in bytes) stored inside the temporary directories.
     /// Default to 100GB
     max_temp_directory_size: u64,
@@ -197,12 +224,14 @@ impl DiskManager {
     pub fn try_new(config: DiskManagerConfig) -> Result<Arc<Self>> {
         match config {
             DiskManagerConfig::Existing(manager) => Ok(manager),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DiskManagerConfig::NewOs => Ok(Arc::new(Self {
                 local_dirs: Mutex::new(Some(vec![])),
                 max_temp_directory_size: DEFAULT_MAX_TEMP_DIRECTORY_SIZE,
                 used_disk_space: Arc::new(AtomicU64::new(0)),
                 active_files_count: Arc::new(AtomicUsize::new(0)),
             })),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DiskManagerConfig::NewSpecified(conf_dirs) => {
                 let local_dirs = create_local_dirs(&conf_dirs)?;
                 debug!(
@@ -214,6 +243,13 @@ impl DiskManager {
                     used_disk_space: Arc::new(AtomicU64::new(0)),
                     active_files_count: Arc::new(AtomicUsize::new(0)),
                 }))
+            }
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            DiskManagerConfig::NewOs | DiskManagerConfig::NewSpecified(_) => {
+                Err(DataFusionError::NotImplemented(
+                    "Filesystem-backed spilling is unavailable on target wasm32-unknown-unknown"
+                        .to_owned(),
+                ))
             }
             DiskManagerConfig::Disabled => Ok(Arc::new(Self {
                 local_dirs: Mutex::new(None),
@@ -279,15 +315,22 @@ impl DiskManager {
 
     /// Returns the temporary directory paths
     pub fn temp_dir_paths(&self) -> Vec<PathBuf> {
-        self.local_dirs
-            .lock()
-            .as_ref()
-            .map(|dirs| {
-                dirs.iter()
-                    .map(|temp_dir| temp_dir.path().to_path_buf())
-                    .collect()
-            })
-            .unwrap_or_default()
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            self.local_dirs
+                .lock()
+                .as_ref()
+                .map(|dirs| {
+                    dirs.iter()
+                        .map(|temp_dir| temp_dir.path().to_path_buf())
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            Vec::new()
+        }
     }
 
     /// Return true if this disk manager supports creating temporary
@@ -301,6 +344,7 @@ impl DiskManager {
     ///
     /// If the file can not be created for some reason, returns an
     /// error message referencing the request description
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn create_tmp_file(
         self: &Arc<Self>,
         request_description: &str,
@@ -338,6 +382,16 @@ impl DiskManager {
             disk_manager: Arc::clone(self),
         })
     }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn create_tmp_file(
+        self: &Arc<Self>,
+        request_description: &str,
+    ) -> Result<RefCountedTempFile> {
+        Err(DataFusionError::NotImplemented(format!(
+            "Temporary spill file creation for {request_description} is unavailable on target wasm32-unknown-unknown; the browser profile is memory-only"
+        )))
+    }
 }
 
 /// A wrapper around a [`NamedTempFile`] that also contains
@@ -358,6 +412,7 @@ impl DiskManager {
 /// Once all references to this file are dropped, the file is deleted, and the
 /// disk usage is subtracted from the disk manager's total.
 #[derive(Debug)]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub struct RefCountedTempFile {
     /// The reference to the directory in which temporary files are created to ensure
     /// it is not cleaned up prior to the NamedTempFile
@@ -374,6 +429,13 @@ pub struct RefCountedTempFile {
     disk_manager: Arc<DiskManager>,
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Debug, Clone)]
+pub struct RefCountedTempFile {
+    _private: (),
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl Clone for RefCountedTempFile {
     fn clone(&self) -> Self {
         Self {
@@ -385,6 +447,7 @@ impl Clone for RefCountedTempFile {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl RefCountedTempFile {
     pub fn path(&self) -> &Path {
         self.tempfile.path()
@@ -437,7 +500,28 @@ impl RefCountedTempFile {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl RefCountedTempFile {
+    pub fn path(&self) -> &Path {
+        unreachable!(
+            "a browser RefCountedTempFile cannot be constructed because spill creation always fails"
+        )
+    }
+
+    pub fn update_disk_usage(&mut self) -> Result<()> {
+        Err(DataFusionError::NotImplemented(
+            "Temporary spill file accounting is unavailable on target wasm32-unknown-unknown"
+                .to_owned(),
+        ))
+    }
+
+    pub fn current_disk_usage(&self) -> u64 {
+        0
+    }
+}
+
 /// When the temporary file is dropped, subtract its disk usage from the disk manager's total
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl Drop for RefCountedTempFile {
     fn drop(&mut self) {
         // Only subtract disk usage when this is the last reference to the file
@@ -456,6 +540,7 @@ impl Drop for RefCountedTempFile {
 }
 
 /// Setup local dirs by creating one new dir in each of the given dirs
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn create_local_dirs(local_dirs: &[PathBuf]) -> Result<Vec<Arc<TempDir>>> {
     local_dirs
         .iter()
@@ -472,7 +557,7 @@ fn create_local_dirs(local_dirs: &[PathBuf]) -> Result<Vec<Arc<TempDir>>> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod tests {
     use super::*;
 

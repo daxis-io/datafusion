@@ -61,7 +61,7 @@ wasm-bindgen = "0.2.99"
 [dev-dependencies]
 bytes = { workspace = true }
 futures = { workspace = true }
-object_store = { workspace = true }
+object_store = { workspace = true, features = ["http"] }
 # needs to be compiled
 tokio = { workspace = true }
 url = { workspace = true }
