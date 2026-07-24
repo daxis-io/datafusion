@@ -263,8 +263,9 @@ mod test {
         );
     }
 
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[wasm_bindgen_test(unsupported = tokio::test)]
-    async fn test_csv_read_xz_compressed() {
+    async fn test_native_csv_read_xz_compressed() {
         let csv_data = "id,value\n1,a\n2,b\n3,c\n";
         let input = Bytes::from(csv_data.as_bytes().to_vec());
         let input_stream =
@@ -312,5 +313,27 @@ mod test {
              | 3  | c     |\n\
              +----+-------+"
         );
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test]
+    fn unsupported_compression_reports_codec_operation_and_target() {
+        for (codec, compression) in [
+            ("xz", FileCompressionType::XZ),
+            ("zstd", FileCompressionType::ZSTD),
+        ] {
+            let stream = stream::iter(vec![Ok::<Bytes, DataFusionError>(
+                Bytes::from_static(b"test"),
+            )])
+            .boxed();
+            let error = match compression.convert_to_compress_stream(stream) {
+                Ok(_) => panic!("native compression backend must be unavailable"),
+                Err(error) => error,
+            };
+            let message = error.to_string();
+            assert!(message.contains("stream compression"), "{message}");
+            assert!(message.contains(codec), "{message}");
+            assert!(message.contains("wasm32-unknown-unknown"), "{message}");
+        }
     }
 }
