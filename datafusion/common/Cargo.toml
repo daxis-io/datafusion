@@ -79,7 +79,18 @@ libc = "0.2.185"
 log = { workspace = true }
 num-traits = { workspace = true }
 object_store = { workspace = true, optional = true }
-parquet = { workspace = true, optional = true, default-features = true }
+parquet = { workspace = true, optional = true, default-features = false, features = [
+    "arrow",
+    "async",
+    "object_store",
+    "snap",
+    "brotli",
+    "flate2-zlib-rs",
+    "lz4",
+    "zstd",
+    "base64",
+    "simdutf8",
+] }
 recursive = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 tokio = { workspace = true }

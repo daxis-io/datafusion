@@ -40,8 +40,6 @@ arrow = { workspace = true }
 async-compression = { version = "0.4.40", features = [
     "bzip2",
     "gzip",
-    "xz",
-    "zstd",
     "tokio",
 ], optional = true }
 async-trait = { workspace = true }
@@ -61,15 +59,20 @@ flate2 = { workspace = true, optional = true }
 futures = { workspace = true }
 glob = { workspace = true }
 itertools = { workspace = true }
-liblzma = { workspace = true, optional = true }
 log = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
-tempfile = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7.17", features = ["io"], optional = true }
 url = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+async-compression = { version = "0.4.40", features = [
+    "xz",
+    "zstd",
+], optional = true }
+liblzma = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
