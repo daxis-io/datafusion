@@ -25,7 +25,9 @@ pub mod csv;
 use futures::Stream;
 use std::collections::HashMap;
 use std::fmt::Formatter;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::fs::File;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -54,6 +56,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tempfile::TempDir;
 // backwards compatibility
 #[cfg(feature = "parquet")]
@@ -148,6 +151,7 @@ pub async fn plan_and_collect(
 }
 
 /// Generate CSV partitions within the supplied directory
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn populate_csv_partitions(
     tmp_dir: &TempDir,
     partition_count: usize,
