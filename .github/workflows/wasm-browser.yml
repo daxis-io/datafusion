@@ -92,6 +92,5 @@ jobs:
             fi
             sleep 1
           done
-          DATAFUSION_WASM_HTTP_PARQUET_URL=\
-http://127.0.0.1:9876/tpch_region_small.parquet \
+          DATAFUSION_WASM_HTTP_PARQUET_URL=http://127.0.0.1:9876/tpch_region_small.parquet \
             wasm-pack test --headless --${{ matrix.browser }} datafusion/wasmtest
