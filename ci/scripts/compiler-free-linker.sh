@@ -50,6 +50,9 @@ for argument in "$@"; do
     -nodefaultlibs)
       # The driver below supplies the startup objects and libraries explicitly.
       ;;
+    -B*)
+      # rustc forwards its compiler search path, which raw ld.lld does not use.
+      ;;
     -Wl,*)
       IFS=',' read -r -a forwarded <<<"${argument#-Wl,}"
       linker_args+=("${forwarded[@]}")
