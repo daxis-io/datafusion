@@ -99,6 +99,8 @@ mod test {
     use datafusion_physical_plan::collect;
     use datafusion_sql::parser::DFParser;
     use futures::{StreamExt, TryStreamExt, stream};
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use object_store::{ClientOptions, http::HttpBuilder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
     use url::Url;
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -234,7 +236,7 @@ mod test {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let session_ctx = SessionContext::new();
+        let session_ctx = get_ctx();
         let store = InMemory::new();
 
         let path = Path::from("a.parquet");
@@ -247,19 +249,24 @@ mod test {
             .await
             .unwrap();
 
-        let df = session_ctx.sql("SELECT * FROM a").await.unwrap();
+        let df = session_ctx
+            .sql(
+                "SELECT value, SUM(id) AS total \
+                 FROM a WHERE id >= 2 GROUP BY value ORDER BY total DESC",
+            )
+            .await
+            .unwrap();
 
         let result = df.collect().await.unwrap();
 
         assert_eq!(
             batches_to_string(&result),
-            "+----+-------+\n\
-             | id | value |\n\
-             +----+-------+\n\
-             | 1  | a     |\n\
-             | 2  | b     |\n\
-             | 3  | c     |\n\
-             +----+-------+"
+            "+-------+-------+\n\
+             | value | total |\n\
+             +-------+-------+\n\
+             | c     | 3     |\n\
+             | b     | 2     |\n\
+             +-------+-------+"
         );
     }
 
@@ -314,7 +321,6 @@ mod test {
              +----+-------+"
         );
     }
-
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen_test]
     fn unsupported_compression_reports_codec_operation_and_target() {
@@ -335,5 +341,80 @@ mod test {
             assert!(message.contains(codec), "{message}");
             assert!(message.contains("wasm32-unknown-unknown"), "{message}");
         }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test]
+    fn browser_profile_rejects_filesystem_spilling() {
+        let configured = DiskManagerBuilder::default()
+            .with_mode(DiskManagerMode::OsTmpDirectory)
+            .build()
+            .expect_err("browser profile must reject a filesystem disk manager");
+        assert!(
+            configured
+                .to_string()
+                .contains("Filesystem-backed spilling is unavailable"),
+            "{configured}"
+        );
+
+        let disabled = Arc::new(
+            DiskManagerBuilder::default()
+                .with_mode(DiskManagerMode::Disabled)
+                .build()
+                .unwrap(),
+        );
+        assert!(!disabled.tmp_files_enabled());
+        let spill = disabled
+            .create_tmp_file("browser query")
+            .expect_err("browser spill must fail before filesystem access");
+        assert!(spill.to_string().contains("browser profile is memory-only"));
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test]
+    async fn browser_http_parquet_projection_filter_order_and_aggregate() {
+        let Some(table_url) = option_env!("DATAFUSION_WASM_HTTP_PARQUET_URL") else {
+            return;
+        };
+
+        let table_url = Url::parse(table_url).unwrap();
+        let mut origin = table_url.clone();
+        origin.set_path("/");
+        origin.set_query(None);
+        origin.set_fragment(None);
+
+        let store = HttpBuilder::new()
+            .with_url(origin.as_str())
+            .with_client_options(ClientOptions::new().with_allow_http(true))
+            .build()
+            .unwrap();
+
+        let ctx = get_ctx();
+        ctx.register_object_store(&origin, Arc::new(store));
+        ctx.register_parquet("region", table_url.as_str(), Default::default())
+            .await
+            .unwrap();
+
+        let rows = ctx
+            .sql(
+                "SELECT r_name, SUM(r_regionkey) AS total \
+                 FROM region WHERE r_regionkey >= 3 \
+                 GROUP BY r_name ORDER BY total DESC",
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            batches_to_string(&rows),
+            "+-------------+-------+\n\
+             | r_name      | total |\n\
+             +-------------+-------+\n\
+             | MIDDLE EAST | 4     |\n\
+             | EUROPE      | 3     |\n\
+             +-------------+-------+"
+        );
     }
 }
