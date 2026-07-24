@@ -146,18 +146,36 @@ flate2 = { workspace = true, optional = true }
 futures = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
-liblzma = { workspace = true, optional = true }
 log = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
-parquet = { workspace = true, optional = true, default-features = true }
+parquet = { workspace = true, optional = true, default-features = false, features = [
+    "arrow",
+    "async",
+    "object_store",
+    "snap",
+    "brotli",
+    "flate2-zlib-rs",
+    "lz4",
+    "zstd",
+    "base64",
+    "simdutf8",
+] }
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 sqlparser = { workspace = true, optional = true }
-tempfile = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4", "js"] }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+liblzma = { workspace = true, optional = true }
+tempfile = { workspace = true }
 zstd = { workspace = true, optional = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Select getrandom's supported JavaScript backend through Cargo features. This
+# avoids process-global RUSTFLAGS and keeps native entropy behavior unchanged.
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }
