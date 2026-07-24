@@ -68,14 +68,20 @@ for feature in "${denied_features[@]}"; do
   fi
 done
 
-duplicates="$(
+package_universes="$(
   cargo tree -p datafusion --target "$target" --locked \
-    -d --prefix none -e normal,build
+    --prefix none -e normal,build --format '{p}' |
+    sed 's/ (\\*)$//' |
+    LC_ALL=C sort -u
 )"
 for package in arrow parquet object_store; do
-  if grep -Eq "^${package} v" <<<"$duplicates"; then
+  universe_count="$(
+    awk -v package="$package" '$1 == package { count++ } END { print count + 0 }' \
+      <<<"$package_universes"
+  )"
+  if (( universe_count > 1 )); then
     printf 'duplicate %s source/version universe in %s graph\n' "$package" "$target" >&2
-    grep -E "^${package} v" <<<"$duplicates" >&2
+    awk -v package="$package" '$1 == package' <<<"$package_universes" >&2
     exit 1
   fi
 done
