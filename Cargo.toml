@@ -89,20 +89,20 @@ version = "53.1.0"
 # See for more details: https://github.com/rust-lang/cargo/issues/11329
 ahash = { version = "0.8", default-features = false }
 apache-avro = { version = "0.21", default-features = false }
-arrow = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", features = [
+arrow = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", features = [
     "prettyprint",
     "chrono-tz",
 ] }
-arrow-buffer = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", default-features = false }
-arrow-flight = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", features = [
+arrow-buffer = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", default-features = false }
+arrow-flight = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", features = [
     "flight-sql-experimental",
 ] }
-arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", default-features = false, features = [
+arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", default-features = false, features = [
     "lz4",
     "zstd",
 ] }
-arrow-ord = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", default-features = false }
-arrow-schema = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", default-features = false }
+arrow-ord = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", default-features = false }
+arrow-schema = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", default-features = false }
 async-trait = "0.1.89"
 bigdecimal = "0.4.8"
 bytes = "1.11"
@@ -165,9 +165,9 @@ liblzma = { version = "0.4.6", features = ["static"] }
 log = "^0.4"
 memchr = "2.8.0"
 num-traits = { version = "0.2" }
-object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "7c30f6973689b8d1af3ef0e1548490c61a5ac5c7", default-features = false }
+object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "e3a57c148f7b12159b1f41b336f21bfc1df3cfaf", default-features = false }
 parking_lot = "0.12"
-parquet = { git = "https://github.com/daxis-io/arrow-rs", rev = "ed6d9505df4404bae287870a1af8b75b604a8e6a", default-features = false, features = [
+parquet = { git = "https://github.com/daxis-io/arrow-rs", rev = "210fa7ad29d7913027fdb148ffd8fd082848d80d", default-features = false, features = [
     "arrow",
     "async",
     "object_store",
