@@ -21,12 +21,14 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Seek, SeekFrom};
 use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::convert::fb_to_schema;
+#[cfg(not(target_arch = "wasm32"))]
 use arrow::ipc::reader::{FileReader, StreamReader};
 use arrow::ipc::writer::IpcWriteOptions;
 use arrow::ipc::{CompressionType, root_as_message};
