@@ -218,6 +218,7 @@ pub struct CsvOpener {
     config: Arc<CsvSource>,
     file_compression_type: FileCompressionType,
     object_store: Arc<dyn ObjectStore>,
+    #[cfg(not(target_arch = "wasm32"))]
     partition_index: usize,
 }
 
@@ -232,6 +233,7 @@ impl CsvOpener {
             config,
             file_compression_type,
             object_store,
+            #[cfg(not(target_arch = "wasm32"))]
             partition_index: 0,
         }
     }
@@ -248,13 +250,14 @@ impl FileSource for CsvSource {
         &self,
         object_store: Arc<dyn ObjectStore>,
         base_config: &FileScanConfig,
-        partition_index: usize,
+        _partition_index: usize,
     ) -> Result<Arc<dyn FileOpener>> {
         let mut opener = Arc::new(CsvOpener {
             config: Arc::new(self.clone()),
             file_compression_type: base_config.file_compression_type,
             object_store,
-            partition_index,
+            #[cfg(not(target_arch = "wasm32"))]
+            partition_index: _partition_index,
         }) as Arc<dyn FileOpener>;
         opener = ProjectionOpener::try_new(
             self.projection.clone(),
