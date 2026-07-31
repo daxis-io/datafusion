@@ -176,7 +176,7 @@ liblzma = { version = "0.4.6", features = ["static"] }
 log = "^0.4"
 memchr = "2.8.1"
 num-traits = { version = "0.2" }
-object_store = { version = "0.13.2", default-features = false }
+object_store = { version = "0.14.1", default-features = false, features = ["tokio", "web"] }
 parking_lot = "0.12"
 parquet = { version = "59.1.0", default-features = false, features = [
     "arrow",
@@ -295,3 +295,18 @@ debug = false
 debug-assertions = false
 strip = "debuginfo"
 incremental = false
+
+# Daxis-only integration pins. The upstream candidate branch intentionally
+# remains free of fork URLs; this POC branch proves the complete dependency
+# stack at immutable exact heads.
+[patch.crates-io]
+arrow = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-avro = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-buffer = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-data = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-flight = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-ord = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+arrow-schema = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
+object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d" }
+parquet = { git = "https://github.com/daxis-io/arrow-rs", rev = "3ef75b2ac57fb1cbd40a98c2bf29adb86fbdb578" }
