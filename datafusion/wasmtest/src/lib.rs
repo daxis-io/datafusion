@@ -81,6 +81,8 @@ mod test {
 
     use bytes::Bytes;
     use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    use datafusion::prelude::CsvReadOptions;
     use datafusion::{
         arrow::{
             array::{ArrayRef, Int32Array, RecordBatch, StringArray},
@@ -88,7 +90,6 @@ mod test {
         },
         datasource::MemTable,
         execution::context::SessionContext,
-        prelude::CsvReadOptions,
     };
     use datafusion_common::{DataFusionError, test_util::batches_to_string};
     use datafusion_execution::{
@@ -98,10 +99,14 @@ mod test {
     };
     use datafusion_physical_plan::collect;
     use datafusion_sql::parser::DFParser;
-    use futures::{StreamExt, TryStreamExt, stream};
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    use futures::TryStreamExt;
+    use futures::{StreamExt, stream};
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    use object_store::PutPayload;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use object_store::{ClientOptions, http::HttpBuilder};
-    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
+    use object_store::{ObjectStoreExt, memory::InMemory, path::Path};
     use url::Url;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -364,9 +369,10 @@ mod test {
                 .unwrap(),
         );
         assert!(!disabled.tmp_files_enabled());
-        let spill = disabled
-            .create_tmp_file("browser query")
-            .expect_err("browser spill must fail before filesystem access");
+        let spill = match disabled.create_tmp_file("browser query") {
+            Ok(_) => panic!("browser spill must fail before filesystem access"),
+            Err(spill) => spill,
+        };
         assert!(spill.to_string().contains("browser profile is memory-only"));
     }
 
