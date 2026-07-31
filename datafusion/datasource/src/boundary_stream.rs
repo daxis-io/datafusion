@@ -28,7 +28,9 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::stream::{BoxStream, Stream};
 use futures::{StreamExt, TryFutureExt};
-use object_store::{GetOptions, GetRange, GetResultPayload, ObjectStore};
+#[cfg(not(target_arch = "wasm32"))]
+use object_store::GetResultPayload;
+use object_store::{GetOptions, GetRange, ObjectStore};
 
 /// How far past `raw_end` the initial bounded fetch covers. If the terminating
 /// newline is not found within this window, `ScanningLastTerminator` issues

@@ -21,6 +21,7 @@ use datafusion_datasource::boundary_stream::AlignedBoundaryStream;
 use datafusion_datasource::projection::{ProjectionOpener, SplitProjection};
 use datafusion_physical_plan::projection::ProjectionExprs;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Read;
 use std::sync::Arc;
 
@@ -38,7 +39,9 @@ use datafusion_common_runtime::JoinSet;
 use datafusion_datasource::file::FileSource;
 use datafusion_datasource::file_scan_config::FileScanConfig;
 use datafusion_execution::TaskContext;
-use datafusion_physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+#[cfg(not(target_arch = "wasm32"))]
+use datafusion_physical_plan::metrics::BaselineMetrics;
+use datafusion_physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_physical_plan::{
     DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
 };
@@ -179,6 +182,7 @@ impl CsvSource {
 }
 
 impl CsvSource {
+    #[cfg(not(target_arch = "wasm32"))]
     fn open<R: Read>(&self, reader: R) -> Result<csv::Reader<R>> {
         Ok(self.builder().build(reader)?)
     }
@@ -361,6 +365,7 @@ impl FileOpener for CsvOpener {
         let store = Arc::clone(&self.object_store);
         let terminator = self.config.terminator();
 
+        #[cfg(not(target_arch = "wasm32"))]
         let baseline_metrics =
             BaselineMetrics::new(&self.config.metrics, self.partition_index);
 
