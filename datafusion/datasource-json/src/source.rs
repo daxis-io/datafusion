@@ -17,6 +17,7 @@
 
 //! Execution plan for reading JSON files (line-delimited and array formats)
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::BufReader;
 use std::pin::Pin;
 use std::sync::Arc;

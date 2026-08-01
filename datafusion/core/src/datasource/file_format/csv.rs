@@ -136,6 +136,7 @@ mod tests {
                 },
                 range: Default::default(),
                 attributes: Attributes::default(),
+                extensions: Default::default(),
             })
         }
 
@@ -591,8 +592,7 @@ mod tests {
 
         //convert compressed_stream to decoded_stream
         let decoded_stream = compressed_csv
-            .read_to_delimited_chunks_from_stream(compressed_stream.unwrap())
-            .await;
+            .read_to_delimited_chunks_from_stream(compressed_stream.unwrap());
         let (schema, records_read) = compressed_csv
             .infer_schema_from_stream(&session_state, records_to_read, decoded_stream)
             .await?;
