@@ -17,19 +17,85 @@
 
 //! Define the `SpillManager` struct, which is responsible for reading and writing `RecordBatch`es to raw files based on the provided configurations.
 
-use super::{SpillReaderStream, in_progress_spill_file::InProgressSpillFile};
+use super::{
+    SpillReaderStream,
+    in_progress_spill_file::InProgressSpillFile,
+    storage_spill::{self, StorageInProgressSpillFile},
+};
 use crate::coop::cooperative;
 use crate::{common::spawn_buffered, metrics::SpillMetrics};
 use arrow::array::StringViewArray;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+#[cfg(test)]
 use datafusion_common::utils::memory::get_record_batch_memory_size;
 use datafusion_common::{DataFusionError, Result, config::SpillCompression};
 use datafusion_execution::SendableRecordBatchStream;
 use datafusion_execution::disk_manager::RefCountedTempFile;
 use datafusion_execution::runtime_env::RuntimeEnv;
+use datafusion_execution::spill_storage::{SpillFileRef, SpillScopeId};
+use futures::FutureExt;
+use futures::future::BoxFuture;
+#[cfg(test)]
 use std::borrow::Borrow;
+use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+#[derive(Debug)]
+pub(crate) struct SpillScopeLease {
+    storage: Option<Arc<dyn datafusion_execution::spill_storage::SpillStorage>>,
+    scope: OnceLock<SpillScopeId>,
+}
+
+impl SpillScopeLease {
+    fn new(
+        storage: Option<Arc<dyn datafusion_execution::spill_storage::SpillStorage>>,
+    ) -> Self {
+        Self {
+            storage,
+            scope: OnceLock::new(),
+        }
+    }
+}
+
+impl Drop for SpillScopeLease {
+    fn drop(&mut self) {
+        let (Some(storage), Some(scope)) = (&self.storage, self.scope.get()) else {
+            return;
+        };
+        storage.release_scope(scope);
+    }
+}
+
+/// A spill stream managed either by the existing native disk manager or by a
+/// path-free backend.
+#[derive(Clone)]
+pub enum SpillFile {
+    Native(RefCountedTempFile),
+    Storage(SpillFileRef),
+}
+
+impl From<RefCountedTempFile> for SpillFile {
+    fn from(file: RefCountedTempFile) -> Self {
+        Self::Native(file)
+    }
+}
+
+impl From<SpillFileRef> for SpillFile {
+    fn from(file: SpillFileRef) -> Self {
+        Self::Storage(file)
+    }
+}
+
+impl fmt::Debug for SpillFile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Native(_) => formatter.write_str("SpillFile::Native(REDACTED)"),
+            Self::Storage(_) => formatter.write_str("SpillFile::Storage(REDACTED)"),
+        }
+    }
+}
 
 /// The `SpillManager` is responsible for the following tasks:
 /// - Reading and writing `RecordBatch`es to raw files based on the provided configurations.
@@ -46,16 +112,32 @@ pub struct SpillManager {
     batch_read_buffer_capacity: usize,
     /// general-purpose compression options
     pub(crate) compression: SpillCompression,
+    /// Lazily created query/operator scope for path-free spill streams.
+    storage_scope: Arc<SpillScopeLease>,
 }
 
 impl SpillManager {
+    pub(crate) fn max_merge_fan_in(&self) -> Option<usize> {
+        self.env
+            .spill_storage()
+            .and_then(|storage| storage.max_merge_fan_in())
+    }
+
+    pub(crate) fn record_merge_pass(&self) {
+        if let Some(storage) = self.env.spill_storage() {
+            storage.record_merge_pass();
+        }
+    }
+
     pub fn new(env: Arc<RuntimeEnv>, metrics: SpillMetrics, schema: SchemaRef) -> Self {
+        let storage_scope = Arc::new(SpillScopeLease::new(env.spill_storage().cloned()));
         Self {
             env,
             metrics,
             schema,
             batch_read_buffer_capacity: 2,
             compression: SpillCompression::default(),
+            storage_scope,
         }
     }
 
@@ -75,6 +157,48 @@ impl SpillManager {
     /// Returns the schema for batches managed by this SpillManager
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
+    }
+
+    /// Starts asynchronous path-free writer acquisition. The returned future is
+    /// owned and `Send`, so an execution stream can retain it while returning
+    /// `Poll::Pending`.
+    pub(crate) fn start_storage_spill(
+        &self,
+    ) -> BoxFuture<'static, Result<StorageInProgressSpillFile>> {
+        let manager = self.clone();
+        async move {
+            let storage = manager.env.spill_storage().cloned().ok_or_else(|| {
+                DataFusionError::ResourcesExhausted(
+                    "path-free spill storage is unavailable".to_owned(),
+                )
+            })?;
+            let scope = if let Some(scope) = manager.storage_scope.scope.get() {
+                scope.clone()
+            } else {
+                let created = storage.create_scope().await?;
+                match manager.storage_scope.scope.set(created.clone()) {
+                    Ok(()) => created,
+                    Err(unused) => {
+                        storage.delete_scope(&unused).await?;
+                        manager
+                            .storage_scope
+                            .scope
+                            .get()
+                            .expect("a competing scope initializer must have succeeded")
+                            .clone()
+                    }
+                }
+            };
+            let writer = storage.create_writer(&scope).await?;
+            StorageInProgressSpillFile::try_new(
+                writer,
+                storage,
+                manager.metrics.clone(),
+                manager.schema.as_ref(),
+                manager.compression,
+            )
+        }
+        .boxed()
     }
 
     /// Creates a temporary file for in-progress operations, returning an error
@@ -110,15 +234,18 @@ impl SpillManager {
         in_progress_file.finish()
     }
 
-    /// Spill an iterator of `RecordBatch`es to disk and return the spill file and the size of the largest batch in memory
-    /// Note that this expects the caller to provide *non-sliced* batches, so the memory calculation of each batch is accurate.
+    /// Spill an iterator of `RecordBatch`es through the native compatibility
+    /// path and return the spill file and largest in-memory batch size.
+    ///
+    /// Existing native callers retain this synchronous API. Path-free backends
+    /// use the stream API below so writer acquisition can return `Pending`.
+    #[cfg(test)]
     pub(crate) fn spill_record_batch_iter_and_return_max_batch_memory(
         &self,
         mut iter: impl Iterator<Item = Result<impl Borrow<RecordBatch>>>,
         request_description: &str,
     ) -> Result<Option<(RefCountedTempFile, usize)>> {
         let mut in_progress_file = self.create_in_progress_file(request_description)?;
-
         let mut max_record_batch_size = 0;
 
         iter.try_for_each(|batch| {
@@ -128,15 +255,14 @@ impl SpillManager {
                 return Ok(());
             }
             in_progress_file.append_batch(borrowed)?;
-
             max_record_batch_size =
                 max_record_batch_size.max(get_record_batch_memory_size(borrowed));
             Result::<_, DataFusionError>::Ok(())
         })?;
 
-        let file = in_progress_file.finish()?;
-
-        Ok(file.map(|f| (f, max_record_batch_size)))
+        Ok(in_progress_file
+            .finish()?
+            .map(|file| (file, max_record_batch_size)))
     }
 
     /// Spill a stream of `RecordBatch`es to disk and return the spill file and the size of the largest batch in memory
@@ -144,8 +270,31 @@ impl SpillManager {
         &self,
         stream: &mut SendableRecordBatchStream,
         request_description: &str,
-    ) -> Result<Option<(RefCountedTempFile, usize)>> {
+    ) -> Result<Option<(SpillFile, usize)>> {
         use futures::StreamExt;
+
+        if self.env.spill_storage().is_some() {
+            let mut in_progress_file = self.start_storage_spill().await?;
+            let mut max_record_batch_size = 0;
+            let mut wrote_batch = false;
+
+            while let Some(batch) = stream.next().await {
+                let batch = batch?;
+                in_progress_file.append_batch(&batch)?;
+                max_record_batch_size =
+                    max_record_batch_size.max(batch.get_sliced_size()?);
+                wrote_batch = true;
+            }
+
+            return if wrote_batch {
+                Ok(Some((
+                    SpillFile::Storage(in_progress_file.finish()?),
+                    max_record_batch_size,
+                )))
+            } else {
+                Ok(None)
+            };
+        }
 
         let mut in_progress_file = self.create_in_progress_file(request_description)?;
 
@@ -160,7 +309,7 @@ impl SpillManager {
 
         let file = in_progress_file.finish()?;
 
-        Ok(file.map(|f| (f, max_record_batch_size)))
+        Ok(file.map(|f| (SpillFile::Native(f), max_record_batch_size)))
     }
 
     /// Reads a spill file as a stream. The file must be created by the current `SpillManager`.
@@ -168,29 +317,62 @@ impl SpillManager {
     /// will be read first.
     pub fn read_spill_as_stream(
         &self,
-        spill_file_path: RefCountedTempFile,
+        spill_file: impl Into<SpillFile>,
         max_record_batch_memory: Option<usize>,
     ) -> Result<SendableRecordBatchStream> {
-        let stream = Box::pin(cooperative(SpillReaderStream::new(
-            Arc::clone(&self.schema),
-            spill_file_path,
-            max_record_batch_memory,
-        )));
-
-        Ok(spawn_buffered(stream, self.batch_read_buffer_capacity))
+        match spill_file.into() {
+            SpillFile::Native(file) => {
+                let stream = Box::pin(cooperative(SpillReaderStream::new(
+                    Arc::clone(&self.schema),
+                    file,
+                    max_record_batch_memory,
+                )));
+                Ok(spawn_buffered(stream, self.batch_read_buffer_capacity))
+            }
+            SpillFile::Storage(file) => {
+                let storage = self.env.spill_storage().cloned().ok_or_else(|| {
+                    DataFusionError::ResourcesExhausted(
+                        "path-free spill storage is unavailable".to_owned(),
+                    )
+                })?;
+                Ok(Box::pin(cooperative(storage_spill::into_stream(
+                    Arc::clone(&self.schema),
+                    storage,
+                    file,
+                    max_record_batch_memory,
+                    Arc::clone(&self.storage_scope),
+                ))))
+            }
+        }
     }
 
     /// Same as `read_spill_as_stream`, but without buffering.
     pub fn read_spill_as_stream_unbuffered(
         &self,
-        spill_file_path: RefCountedTempFile,
+        spill_file: impl Into<SpillFile>,
         max_record_batch_memory: Option<usize>,
     ) -> Result<SendableRecordBatchStream> {
-        Ok(Box::pin(cooperative(SpillReaderStream::new(
-            Arc::clone(&self.schema),
-            spill_file_path,
-            max_record_batch_memory,
-        ))))
+        match spill_file.into() {
+            SpillFile::Native(file) => Ok(Box::pin(cooperative(SpillReaderStream::new(
+                Arc::clone(&self.schema),
+                file,
+                max_record_batch_memory,
+            )))),
+            SpillFile::Storage(file) => {
+                let storage = self.env.spill_storage().cloned().ok_or_else(|| {
+                    DataFusionError::ResourcesExhausted(
+                        "path-free spill storage is unavailable".to_owned(),
+                    )
+                })?;
+                Ok(Box::pin(cooperative(storage_spill::into_stream(
+                    Arc::clone(&self.schema),
+                    storage,
+                    file,
+                    max_record_batch_memory,
+                    Arc::clone(&self.storage_scope),
+                ))))
+            }
+        }
     }
 }
 

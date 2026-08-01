@@ -20,12 +20,15 @@
 
 #[expect(deprecated)]
 use crate::disk_manager::{DiskManagerConfig, SpillingProgress};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use crate::spill_storage::NativeSpillStorage;
 use crate::{
     disk_manager::{DiskManager, DiskManagerBuilder, DiskManagerMode},
     memory_pool::{
         GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
     },
     object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry},
+    spill_storage::SpillStorage,
 };
 
 use crate::cache::cache_manager::{CacheManager, CacheManagerConfig};
@@ -76,6 +79,8 @@ pub struct RuntimeEnv {
     pub memory_pool: Arc<dyn MemoryPool>,
     /// Manage temporary files during query execution
     pub disk_manager: Arc<DiskManager>,
+    /// Optional path-free backend for query-scoped sequential spill streams.
+    spill_storage: Option<Arc<dyn SpillStorage>>,
     /// Manage temporary cache during query execution
     pub cache_manager: Arc<CacheManager>,
     /// Object Store Registry
@@ -204,6 +209,11 @@ impl RuntimeEnv {
         self.disk_manager.spilling_progress()
     }
 
+    /// Returns the explicitly configured path-free spill backend.
+    pub fn spill_storage(&self) -> Option<&Arc<dyn SpillStorage>> {
+        self.spill_storage.as_ref()
+    }
+
     /// Register an [`EncryptionFactory`] with an associated identifier that can be later
     /// used to configure encryption when reading or writing Parquet.
     /// If an encryption factory with the same identifier was already registered, it is replaced and returned.
@@ -327,6 +337,8 @@ pub struct RuntimeEnvBuilder {
     ///
     /// Defaults to using an [`UnboundedMemoryPool`] if `None`
     pub memory_pool: Option<Arc<dyn MemoryPool>>,
+    /// Optional path-free storage for sequential spill streams.
+    pub spill_storage: Option<Arc<dyn SpillStorage>>,
     /// CacheManager to manage cache data
     pub cache_manager: CacheManagerConfig,
     /// ObjectStoreRegistry to get object store based on url
@@ -349,6 +361,7 @@ impl RuntimeEnvBuilder {
             disk_manager: Default::default(),
             disk_manager_builder: Default::default(),
             memory_pool: Default::default(),
+            spill_storage: Default::default(),
             cache_manager: Default::default(),
             object_store_registry: Arc::new(DefaultObjectStoreRegistry::default()),
             #[cfg(feature = "parquet_encryption")]
@@ -373,6 +386,12 @@ impl RuntimeEnvBuilder {
     /// Customize memory policy
     pub fn with_memory_pool(mut self, memory_pool: Arc<dyn MemoryPool>) -> Self {
         self.memory_pool = Some(memory_pool);
+        self
+    }
+
+    /// Customize the storage backend used by path-free spill operators.
+    pub fn with_spill_storage(mut self, spill_storage: Arc<dyn SpillStorage>) -> Self {
+        self.spill_storage = Some(spill_storage);
         self
     }
 
@@ -444,6 +463,7 @@ impl RuntimeEnvBuilder {
             disk_manager,
             disk_manager_builder,
             memory_pool,
+            spill_storage,
             cache_manager,
             object_store_registry,
             #[cfg(feature = "parquet_encryption")]
@@ -451,15 +471,23 @@ impl RuntimeEnvBuilder {
         } = self;
         let memory_pool =
             memory_pool.unwrap_or_else(|| Arc::new(UnboundedMemoryPool::default()));
+        let disk_manager = if let Some(builder) = disk_manager_builder {
+            Arc::new(builder.build()?)
+        } else {
+            #[expect(deprecated)]
+            DiskManager::try_new(disk_manager)?
+        };
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let spill_storage = spill_storage.or_else(|| {
+            disk_manager.tmp_files_enabled().then(|| {
+                Arc::new(NativeSpillStorage::new(Arc::clone(&disk_manager))) as _
+            })
+        });
 
         Ok(RuntimeEnv {
             memory_pool,
-            disk_manager: if let Some(builder) = disk_manager_builder {
-                Arc::new(builder.build()?)
-            } else {
-                #[expect(deprecated)]
-                DiskManager::try_new(disk_manager)?
-            },
+            disk_manager,
+            spill_storage,
             cache_manager: CacheManager::try_new(&cache_manager)?,
             object_store_registry,
             #[cfg(feature = "parquet_encryption")]
@@ -496,6 +524,7 @@ impl RuntimeEnvBuilder {
             )),
             disk_manager_builder: None,
             memory_pool: Some(Arc::clone(&runtime_env.memory_pool)),
+            spill_storage: runtime_env.spill_storage.as_ref().map(Arc::clone),
             cache_manager: cache_config,
             object_store_registry: Arc::clone(&runtime_env.object_store_registry),
             #[cfg(feature = "parquet_encryption")]

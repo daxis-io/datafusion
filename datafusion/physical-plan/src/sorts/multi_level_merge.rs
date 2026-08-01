@@ -222,6 +222,9 @@ impl MultiLevelMergeBuilder {
     fn merge_sorted_runs_within_mem_limit(
         &mut self,
     ) -> Result<SendableRecordBatchStream> {
+        if self.sorted_spill_files.len() + self.sorted_streams.len() > 1 {
+            self.spill_manager.record_merge_pass();
+        }
         match (self.sorted_spill_files.len(), self.sorted_streams.len()) {
             // No data so empty batch
             (0, 0) => Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(
@@ -357,7 +360,14 @@ impl MultiLevelMergeBuilder {
         assert_ne!(buffer_len, 0, "Buffer length must be greater than 0");
         let mut number_of_spills_to_read_for_current_phase = 0;
 
-        for spill in &self.sorted_spill_files {
+        let max_spills = self
+            .spill_manager
+            .max_merge_fan_in()
+            .map(|fan_in| fan_in.saturating_sub(self.sorted_streams.len()))
+            .unwrap_or(usize::MAX)
+            .max(minimum_number_of_required_streams);
+
+        for spill in self.sorted_spill_files.iter().take(max_spills) {
             // For memory pools that are not shared this is good, for other this is not
             // and there should be some upper limit to memory reservation so we won't starve the system
             match reservation.try_grow(

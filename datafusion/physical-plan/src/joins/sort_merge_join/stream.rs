@@ -23,7 +23,9 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::fs::File;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::io::BufReader;
 use std::mem::size_of;
 use std::ops::Range;
@@ -44,11 +46,14 @@ use crate::spill::spill_manager::SpillManager;
 use crate::{PhysicalExpr, RecordBatchStream, SendableRecordBatchStream};
 
 use arrow::array::{types::UInt64Type, *};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use arrow::compute::take;
 use arrow::compute::{
     self, BatchCoalescer, SortOptions, concat_batches, filter_record_batch, is_not_null,
-    take, take_arrays,
+    take_arrays,
 };
 use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use arrow::ipc::reader::StreamReader;
 use datafusion_common::config::SpillCompression;
 use datafusion_common::{
@@ -1668,19 +1673,30 @@ fn fetch_right_columns_from_batch_by_idxs(
         }
         // If the batch was spilled to disk, less likely
         BufferedBatchState::Spilled(spill_file) => {
-            let mut buffered_cols: Vec<ArrayRef> =
-                Vec::with_capacity(buffered_indices.len());
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                let mut buffered_cols: Vec<ArrayRef> =
+                    Vec::with_capacity(buffered_indices.len());
 
-            let file = BufReader::new(File::open(spill_file.path())?);
-            let reader = StreamReader::try_new(file, None)?;
+                let file = BufReader::new(File::open(spill_file.path())?);
+                let reader = StreamReader::try_new(file, None)?;
 
-            for batch in reader {
-                batch?.columns().iter().for_each(|column| {
-                    buffered_cols.extend(take(column, &buffered_indices, None))
-                });
+                for batch in reader {
+                    batch?.columns().iter().for_each(|column| {
+                        buffered_cols.extend(take(column, &buffered_indices, None))
+                    });
+                }
+
+                Ok(buffered_cols)
             }
 
-            Ok(buffered_cols)
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                let _ = spill_file;
+                exec_err!(
+                    "sort-merge join native spill files are unavailable in browser builds"
+                )
+            }
         }
     }
 }

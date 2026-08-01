@@ -43,7 +43,8 @@ use crate::sorts::IncrementalSortIterator;
 use crate::sorts::streaming_merge::{SortedSpillFile, StreamingMergeBuilder};
 use crate::spill::get_record_batch_memory_size;
 use crate::spill::in_progress_spill_file::InProgressSpillFile;
-use crate::spill::spill_manager::{GetSlicedSize, SpillManager};
+use crate::spill::spill_manager::{GetSlicedSize, SpillFile, SpillManager};
+use crate::spill::storage_spill::StorageInProgressSpillFile;
 use crate::stream::RecordBatchStreamAdapter;
 use crate::stream::ReservationStream;
 use crate::topk::TopK;
@@ -77,6 +78,32 @@ struct ExternalSorterMetrics {
     baseline: BaselineMetrics,
 
     spill_metrics: SpillMetrics,
+}
+
+enum SortInProgressSpillFile {
+    Native(InProgressSpillFile),
+    Storage(StorageInProgressSpillFile),
+}
+
+impl SortInProgressSpillFile {
+    fn append_batch(&mut self, batch: &RecordBatch) -> Result<()> {
+        match self {
+            Self::Native(file) => file.append_batch(batch),
+            Self::Storage(file) => file.append_batch(batch),
+        }
+    }
+
+    fn finish(mut self) -> Result<Option<SpillFile>> {
+        match &mut self {
+            Self::Native(file) => file.finish().map(|file| file.map(SpillFile::Native)),
+            Self::Storage(_) => {
+                let Self::Storage(file) = self else {
+                    unreachable!()
+                };
+                Ok(Some(SpillFile::Storage(file.finish()?)))
+            }
+        }
+    }
 }
 
 impl ExternalSorterMetrics {
@@ -232,9 +259,9 @@ struct ExternalSorter {
     /// this file incrementally. Once finished, this file will be moved to [`Self::finished_spill_files`].
     ///
     /// this is a tuple of:
-    /// 1. `InProgressSpillFile` - the file that is being written to
+    /// 1. `SortInProgressSpillFile` - the stream that is being written to
     /// 2. `max_record_batch_memory` - the maximum memory usage of a single batch in this spill file.
-    in_progress_spill_file: Option<(InProgressSpillFile, usize)>,
+    in_progress_spill_file: Option<(SortInProgressSpillFile, usize)>,
     /// If data has previously been spilled, the locations of the spill files (in
     /// Arrow IPC format)
     /// Within the same spill file, the data might be chunked into multiple batches,
@@ -401,8 +428,16 @@ impl ExternalSorter {
 
         // Lazily initialize the in-progress spill file
         if self.in_progress_spill_file.is_none() {
-            self.in_progress_spill_file =
-                Some((self.spill_manager.create_in_progress_file("Sorting")?, 0));
+            let file = if self.runtime.spill_storage().is_some() {
+                SortInProgressSpillFile::Storage(
+                    self.spill_manager.start_storage_spill().await?,
+                )
+            } else {
+                SortInProgressSpillFile::Native(
+                    self.spill_manager.create_in_progress_file("Sorting")?,
+                )
+            };
+            self.in_progress_spill_file = Some((file, 0));
         }
 
         Self::organize_stringview_arrays(globally_sorted_batches)?;
@@ -434,7 +469,7 @@ impl ExternalSorter {
 
     /// Finishes the in-progress spill file and moves it to the finished spill files.
     async fn spill_finish(&mut self) -> Result<()> {
-        let (mut in_progress_file, max_record_batch_memory) =
+        let (in_progress_file, max_record_batch_memory) =
             self.in_progress_spill_file.take().ok_or_else(|| {
                 internal_datafusion_err!("Should be called after `spill_append`")
             })?;
@@ -769,7 +804,7 @@ impl ExternalSorter {
     /// left for the in memory sort/merge.
     fn reserve_memory_for_merge(&mut self) -> Result<()> {
         // Reserve headroom for next merge sort
-        if self.runtime.disk_manager.tmp_files_enabled() {
+        if self.runtime.spill_storage().is_some() {
             let size = self.sort_spill_reservation_bytes;
             if self.merge_reservation.size() != size {
                 self.merge_reservation
@@ -1414,6 +1449,7 @@ mod tests {
     use crate::execution_plan::Boundedness;
     use crate::expressions::col;
     use crate::filter_pushdown::{FilterPushdownPhase, PushedDown};
+    use crate::spill::test_storage::YieldingSpillStorage;
     use crate::test;
     use crate::test::TestMemoryExec;
     use crate::test::exec::{BlockingExec, assert_strong_count_converges_to_zero};
@@ -1428,7 +1464,9 @@ mod tests {
     use datafusion_common::{DataFusionError, Result, ScalarValue};
     use datafusion_execution::RecordBatchStream;
     use datafusion_execution::config::SessionConfig;
+    use datafusion_execution::disk_manager::{DiskManager, DiskManagerMode};
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion_execution::spill_storage::{NativeSpillStorage, SpillStorage};
     use datafusion_physical_expr::EquivalenceProperties;
     use datafusion_physical_expr::expressions::{Column, Literal};
 
@@ -1645,6 +1683,78 @@ mod tests {
             task_ctx.runtime_env().memory_pool.reserved(),
             0,
             "The sort should have returned all memory used back to the memory manager"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sort_spill_uses_path_free_backend_when_disk_manager_is_disabled()
+    -> Result<()> {
+        let session_config = SessionConfig::new();
+        let sort_spill_reservation_bytes = session_config
+            .options()
+            .execution
+            .sort_spill_reservation_bytes;
+        let storage_disk = Arc::new(DiskManager::builder().build()?);
+        let storage = Arc::new(NativeSpillStorage::new(storage_disk));
+        let delayed_storage = Arc::new(YieldingSpillStorage::new(storage.clone()));
+        let storage_backend: Arc<dyn SpillStorage> = delayed_storage.clone();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(sort_spill_reservation_bytes + 12288, 1.0)
+            .with_disk_manager_builder(
+                DiskManager::builder().with_mode(DiskManagerMode::Disabled),
+            )
+            .with_spill_storage(storage_backend)
+            .build_arc()?;
+        let task_ctx = Arc::new(
+            TaskContext::default()
+                .with_session_config(session_config)
+                .with_runtime(runtime),
+        );
+
+        let input = test::scan_partitioned(100);
+        let schema = input.schema();
+        let sort_exec = Arc::new(SortExec::new(
+            [PhysicalSortExpr {
+                expr: col("i", &schema)?,
+                options: SortOptions::default(),
+            }]
+            .into(),
+            Arc::new(CoalescePartitionsExec::new(input)),
+        ));
+
+        let result = collect(
+            Arc::clone(&sort_exec) as Arc<dyn ExecutionPlan>,
+            Arc::clone(&task_ctx),
+        )
+        .await?;
+
+        assert_eq!(
+            result.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            10_000
+        );
+        let accounting = storage.accounting();
+        assert!(
+            accounting.bytes_written > 0,
+            "external sort must write path-free spill data"
+        );
+        assert!(
+            accounting.bytes_read > 0,
+            "external sort must merge path-free spill data"
+        );
+        assert!(
+            accounting.files_created > 0,
+            "external sort must create path-free spill files"
+        );
+        assert!(
+            delayed_storage.pending_poll_count() > 0,
+            "external sort must tolerate pending spill storage operations"
+        );
+        assert_eq!(
+            task_ctx.runtime_env().memory_pool.reserved(),
+            0,
+            "the path-free sort must return all reserved memory"
         );
 
         Ok(())
