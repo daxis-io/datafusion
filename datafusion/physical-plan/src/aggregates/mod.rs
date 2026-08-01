@@ -1971,6 +1971,9 @@ pub fn evaluate_group_by(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fmt::Debug;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::task::{Context, Poll};
 
     use super::*;
@@ -1986,8 +1989,8 @@ mod tests {
     use crate::test::exec::{BlockingExec, assert_strong_count_converges_to_zero};
 
     use arrow::array::{
-        DictionaryArray, Float32Array, Float64Array, Int32Array, Int64Array, StructArray,
-        UInt32Array, UInt64Array,
+        Decimal128Array, DictionaryArray, Float32Array, Float64Array, Int32Array,
+        Int64Array, StringDictionaryBuilder, StructArray, UInt32Array, UInt64Array,
     };
     use arrow::compute::{SortOptions, concat_batches};
     use arrow::datatypes::{DataType, Int32Type};
@@ -1996,6 +1999,11 @@ mod tests {
     use datafusion_execution::config::SessionConfig;
     use datafusion_execution::memory_pool::FairSpillPool;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion_execution::spill_storage::{
+        SpillAppendWriter, SpillFileRef, SpillScope, SpillScopeId, SpillSequentialReader,
+        SpillStorage, SpillStorageConfig, SpillStorageError, SpillStorageErrorReason,
+        SpillStorageMetrics, SpillStorageResult,
+    };
     use datafusion_functions_aggregate::array_agg::array_agg_udaf;
     use datafusion_functions_aggregate::average::avg_udaf;
     use datafusion_functions_aggregate::count::count_udaf;
@@ -2009,9 +2017,197 @@ mod tests {
     use datafusion_physical_expr::expressions::lit;
 
     use crate::projection::ProjectionExec;
+    use async_trait::async_trait;
     use datafusion_physical_expr::projection::ProjectionExpr;
-    use futures::{FutureExt, Stream};
+    use futures::{FutureExt, Stream, future::poll_fn};
     use insta::{allow_duplicates, assert_snapshot};
+    use parking_lot::Mutex;
+
+    #[derive(Debug, Default)]
+    struct TestExternalSpillStorage {
+        state: Arc<TestExternalSpillState>,
+        first_scope_poll: AtomicBool,
+    }
+
+    #[derive(Debug, Default)]
+    struct TestExternalSpillState {
+        files: Mutex<HashMap<SpillFileRef, Vec<u8>>>,
+        next_file_id: AtomicU64,
+        peak_bytes: AtomicU64,
+        files_created: AtomicU64,
+        files_deleted: AtomicU64,
+        bytes_written: AtomicU64,
+        quota_bytes: AtomicU64,
+        merge_passes: AtomicU64,
+        fail_reader_open: AtomicBool,
+        deleted: AtomicBool,
+    }
+
+    #[async_trait]
+    impl SpillStorage for TestExternalSpillStorage {
+        async fn create_scope(&self) -> SpillStorageResult<Arc<dyn SpillScope>> {
+            poll_fn(|context| {
+                if !self.first_scope_poll.swap(true, Ordering::AcqRel) {
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(())
+            })
+            .await;
+            Ok(Arc::new(TestExternalSpillScope {
+                state: Arc::clone(&self.state),
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestExternalSpillScope {
+        state: Arc<TestExternalSpillState>,
+    }
+
+    #[async_trait]
+    impl SpillScope for TestExternalSpillScope {
+        fn id(&self) -> SpillScopeId {
+            SpillScopeId::new(1)
+        }
+
+        async fn create_file(
+            &self,
+        ) -> SpillStorageResult<(SpillFileRef, Box<dyn SpillAppendWriter>)> {
+            let file_id = self.state.next_file_id.fetch_add(1, Ordering::Relaxed) + 1;
+            let file = SpillFileRef::new(self.id(), file_id);
+            self.state.files.lock().insert(file, Vec::new());
+            self.state.files_created.fetch_add(1, Ordering::Relaxed);
+            Ok((
+                file,
+                Box::new(TestExternalSpillWriter {
+                    file,
+                    state: Arc::clone(&self.state),
+                }),
+            ))
+        }
+
+        async fn open_reader(
+            &self,
+            file: SpillFileRef,
+        ) -> SpillStorageResult<Box<dyn SpillSequentialReader>> {
+            if self.state.fail_reader_open.load(Ordering::Acquire) {
+                return Err(SpillStorageError::new(
+                    SpillStorageErrorReason::IoFailure,
+                    "injected external spill read failure",
+                ));
+            }
+            let bytes = self
+                .state
+                .files
+                .lock()
+                .get(&file)
+                .cloned()
+                .ok_or_else(test_spill_unavailable)?;
+            Ok(Box::new(TestExternalSpillReader { bytes, offset: 0 }))
+        }
+
+        async fn delete_file(&self, file: SpillFileRef) -> SpillStorageResult<()> {
+            self.state
+                .files
+                .lock()
+                .remove(&file)
+                .ok_or_else(test_spill_unavailable)?;
+            self.state.files_deleted.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn delete_scope(&self) -> SpillStorageResult<()> {
+            self.state.files.lock().clear();
+            self.state.deleted.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn record_merge_pass(&self) {
+            self.state.merge_passes.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn metrics(&self) -> SpillStorageMetrics {
+            let files = self.state.files.lock();
+            let current_bytes = files.values().map(|bytes| bytes.len() as u64).sum();
+            self.state
+                .peak_bytes
+                .fetch_max(current_bytes, Ordering::Relaxed);
+            SpillStorageMetrics {
+                current_bytes,
+                peak_bytes: self.state.peak_bytes.load(Ordering::Relaxed),
+                files_created: self.state.files_created.load(Ordering::Relaxed),
+                active_files: files.len() as u64,
+                merge_passes: self.state.merge_passes.load(Ordering::Relaxed),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestExternalSpillWriter {
+        file: SpillFileRef,
+        state: Arc<TestExternalSpillState>,
+    }
+
+    #[async_trait]
+    impl SpillAppendWriter for TestExternalSpillWriter {
+        async fn append(&mut self, bytes: &[u8]) -> SpillStorageResult<()> {
+            let mut files = self.state.files.lock();
+            let current_bytes = files.values().map(|file| file.len() as u64).sum::<u64>();
+            let next_bytes = current_bytes.saturating_add(bytes.len() as u64);
+            let quota_bytes = self.state.quota_bytes.load(Ordering::Relaxed);
+            if quota_bytes > 0 && next_bytes > quota_bytes {
+                return Err(SpillStorageError::new(
+                    SpillStorageErrorReason::QuotaExceeded,
+                    "test external spill quota exceeded",
+                ));
+            }
+            files
+                .get_mut(&self.file)
+                .ok_or_else(test_spill_unavailable)?
+                .extend_from_slice(bytes);
+            self.state
+                .bytes_written
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            self.state
+                .peak_bytes
+                .fetch_max(next_bytes, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn finalize(self: Box<Self>) -> SpillStorageResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestExternalSpillReader {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    #[async_trait]
+    impl SpillSequentialReader for TestExternalSpillReader {
+        async fn read_next(
+            &mut self,
+            max_bytes: usize,
+        ) -> SpillStorageResult<Option<Vec<u8>>> {
+            if self.offset == self.bytes.len() {
+                return Ok(None);
+            }
+            let end = (self.offset + max_bytes).min(self.bytes.len());
+            let bytes = self.bytes[self.offset..end].to_vec();
+            self.offset = end;
+            Ok(Some(bytes))
+        }
+    }
+
+    fn test_spill_unavailable() -> SpillStorageError {
+        SpillStorageError::new(
+            SpillStorageErrorReason::Unavailable,
+            "test external spill file is unavailable",
+        )
+    }
 
     // Generate a schema which consists of 5 columns (a, b, c, d, e)
     fn create_test_schema() -> Result<SchemaRef> {
@@ -3440,6 +3636,7 @@ mod tests {
     async fn run_test_with_spill_pool_if_necessary(
         pool_size: usize,
         expect_spill: bool,
+        external_storage: Option<Arc<TestExternalSpillStorage>>,
     ) -> Result<()> {
         fn create_record_batch(
             schema: &Arc<Schema>,
@@ -3503,19 +3700,67 @@ mod tests {
 
         let batch_size = 2;
         let memory_pool = Arc::new(FairSpillPool::new(pool_size));
+        let runtime = RuntimeEnvBuilder::new().with_memory_pool(memory_pool);
+        let mut session_config = SessionConfig::new().with_batch_size(batch_size);
+        if let Some(storage) = external_storage.as_ref() {
+            let spill_storage: Arc<dyn SpillStorage> = Arc::clone(storage) as _;
+            session_config = session_config
+                .with_extension(Arc::new(SpillStorageConfig::new(spill_storage)));
+        }
         let task_ctx = Arc::new(
             TaskContext::default()
-                .with_session_config(SessionConfig::new().with_batch_size(batch_size))
-                .with_runtime(Arc::new(
-                    RuntimeEnvBuilder::new()
-                        .with_memory_pool(memory_pool)
-                        .build()?,
-                )),
+                .with_session_config(session_config)
+                .with_runtime(Arc::new(runtime.build()?)),
         );
 
-        let result = collect(single_aggregate.execute(0, Arc::clone(&task_ctx))?).await?;
+        let result = collect(single_aggregate.execute(0, Arc::clone(&task_ctx))?).await;
+
+        if external_storage
+            .as_ref()
+            .is_some_and(|storage| storage.state.fail_reader_open.load(Ordering::Acquire))
+        {
+            assert!(
+                result.is_err(),
+                "injected spill read failure should fail execution"
+            );
+            let storage = external_storage.expect("faulting storage should be present");
+            assert!(
+                storage.state.deleted.load(Ordering::Acquire),
+                "external aggregate should delete its spill scope after a read failure"
+            );
+            assert!(
+                storage.state.files.lock().is_empty(),
+                "external aggregate should leave no files after a read failure"
+            );
+            return Ok(());
+        }
+        let result = result?;
 
         assert_spill_count_metric(expect_spill, single_aggregate);
+        if let Some(storage) = external_storage
+            && expect_spill
+        {
+            assert!(
+                storage.state.files_created.load(Ordering::Relaxed) > 0,
+                "external aggregate should create at least one spill file"
+            );
+            assert!(
+                storage.state.files_deleted.load(Ordering::Relaxed) > 0,
+                "external aggregate should reclaim consumed spill files before scope cleanup"
+            );
+            assert!(
+                storage.state.deleted.load(Ordering::Acquire),
+                "external aggregate should delete its query spill scope"
+            );
+            assert!(
+                storage.state.files.lock().is_empty(),
+                "external aggregate should leave no active spill files"
+            );
+            assert!(
+                storage.state.merge_passes.load(Ordering::Relaxed) > 0,
+                "external aggregate should record at least one merge pass"
+            );
+        }
 
         allow_duplicates! {
             assert_snapshot!(batches_to_string(&result), @r"
@@ -3564,9 +3809,181 @@ mod tests {
     #[tokio::test]
     async fn test_aggregate_with_spill_if_necessary() -> Result<()> {
         // test with spill
-        run_test_with_spill_pool_if_necessary(2_000, true).await?;
+        run_test_with_spill_pool_if_necessary(2_000, true, None).await?;
         // test without spill
-        run_test_with_spill_pool_if_necessary(20_000, false).await?;
+        run_test_with_spill_pool_if_necessary(20_000, false, None).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_spills_through_async_path_free_storage() -> Result<()> {
+        let storage = Arc::new(TestExternalSpillStorage::default());
+        run_test_with_spill_pool_if_necessary(8_000, true, Some(storage)).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_aggregate_matches_oracle_for_null_dictionary_and_decimal_data()
+    -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "region",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new("amount", DataType::Decimal128(12, 2), true),
+            Field::new("quantity", DataType::Int64, true),
+        ]));
+        let mut batches = Vec::new();
+        for batch_index in 0..32 {
+            let mut regions = StringDictionaryBuilder::<Int32Type>::new();
+            let mut amounts = Vec::new();
+            let mut quantities = Vec::new();
+            for row_index in 0..256 {
+                let absolute_row = batch_index * 256 + row_index;
+                if absolute_row % 29 == 0 {
+                    regions.append_null();
+                } else {
+                    regions.append(format!("region-{absolute_row:05}"))?;
+                }
+                amounts.push(
+                    (absolute_row % 13 != 0)
+                        .then_some(((absolute_row % 10_000) as i128) - 5_000),
+                );
+                quantities.push(
+                    (absolute_row % 17 != 0).then_some((absolute_row % 100) as i64),
+                );
+            }
+            let amount =
+                Decimal128Array::from(amounts).with_precision_and_scale(12, 2)?;
+            batches.push(RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(regions.finish()),
+                    Arc::new(amount),
+                    Arc::new(Int64Array::from(quantities)),
+                ],
+            )?);
+        }
+
+        let execute = |runtime: RuntimeEnvBuilder,
+                       mut session_config: SessionConfig|
+         -> Result<(Arc<AggregateExec>, Arc<TaskContext>)> {
+            let input: Arc<dyn ExecutionPlan> = TestMemoryExec::try_new_exec(
+                &[batches.clone()],
+                Arc::clone(&schema),
+                None,
+            )?;
+            let grouping_set = PhysicalGroupBy::new(
+                vec![(col("region", &schema)?, "region".to_string())],
+                vec![],
+                vec![vec![false]],
+                false,
+            );
+            let aggregates: Vec<Arc<AggregateFunctionExpr>> = vec![
+                Arc::new(
+                    AggregateExprBuilder::new(sum_udaf(), vec![col("amount", &schema)?])
+                        .schema(Arc::clone(&schema))
+                        .alias("SUM(amount)")
+                        .build()?,
+                ),
+                Arc::new(
+                    AggregateExprBuilder::new(
+                        sum_udaf(),
+                        vec![col("quantity", &schema)?],
+                    )
+                    .schema(Arc::clone(&schema))
+                    .alias("SUM(quantity)")
+                    .build()?,
+                ),
+                Arc::new(
+                    AggregateExprBuilder::new(
+                        count_udaf(),
+                        vec![col("quantity", &schema)?],
+                    )
+                    .schema(Arc::clone(&schema))
+                    .alias("COUNT(quantity)")
+                    .build()?,
+                ),
+            ];
+            let aggregate = Arc::new(AggregateExec::try_new(
+                AggregateMode::Single,
+                grouping_set,
+                aggregates,
+                vec![None, None, None],
+                input,
+                Arc::clone(&schema),
+            )?);
+            session_config = session_config.with_batch_size(64);
+            let context = Arc::new(
+                TaskContext::default()
+                    .with_session_config(session_config)
+                    .with_runtime(Arc::new(runtime.build()?)),
+            );
+            Ok((aggregate, context))
+        };
+
+        let (oracle_plan, oracle_context) =
+            execute(RuntimeEnvBuilder::new(), SessionConfig::new())?;
+        let oracle = collect(oracle_plan.execute(0, oracle_context)?).await?;
+
+        let storage = Arc::new(TestExternalSpillStorage::default());
+        let spill_storage: Arc<dyn SpillStorage> = Arc::clone(&storage) as _;
+        let session_config = SessionConfig::new()
+            .with_extension(Arc::new(SpillStorageConfig::new(spill_storage)));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(FairSpillPool::new(128 * 1024)));
+        let (external_plan, external_context) = execute(runtime, session_config)?;
+        let external = collect(external_plan.execute(0, external_context)?).await?;
+
+        assert_eq!(
+            batches_to_sort_string(&external),
+            batches_to_sort_string(&oracle)
+        );
+        assert_spill_count_metric(true, external_plan);
+        assert!(storage.state.files_created.load(Ordering::Relaxed) > 8);
+        assert!(storage.state.files_deleted.load(Ordering::Relaxed) > 0);
+        assert!(storage.state.merge_passes.load(Ordering::Relaxed) >= 2);
+        assert!(storage.state.deleted.load(Ordering::Acquire));
+        assert!(storage.state.files.lock().is_empty());
+
+        let peak_active_bytes = storage.state.peak_bytes.load(Ordering::Relaxed);
+        let cumulative_bytes = storage.state.bytes_written.load(Ordering::Relaxed);
+        assert!(peak_active_bytes < cumulative_bytes);
+
+        let quota_storage = Arc::new(TestExternalSpillStorage::default());
+        quota_storage
+            .state
+            .quota_bytes
+            .store(peak_active_bytes + 4 * 1024, Ordering::Relaxed);
+        let spill_storage: Arc<dyn SpillStorage> = Arc::clone(&quota_storage) as _;
+        let session_config = SessionConfig::new()
+            .with_extension(Arc::new(SpillStorageConfig::new(spill_storage)));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(FairSpillPool::new(128 * 1024)));
+        let (quota_plan, quota_context) = execute(runtime, session_config)?;
+        let quota_result = collect(quota_plan.execute(0, quota_context)?).await?;
+        assert_eq!(
+            batches_to_sort_string(&quota_result),
+            batches_to_sort_string(&oracle)
+        );
+        assert!(
+            quota_storage.state.quota_bytes.load(Ordering::Relaxed)
+                < quota_storage.state.bytes_written.load(Ordering::Relaxed),
+            "the quota must be below cumulative writes to prove consumed runs were reclaimed"
+        );
+        assert!(quota_storage.state.files.lock().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_aggregate_cleans_up_after_spill_read_failure() -> Result<()> {
+        let storage = Arc::new(TestExternalSpillStorage::default());
+        storage
+            .state
+            .fail_reader_open
+            .store(true, Ordering::Release);
+        run_test_with_spill_pool_if_necessary(8_000, true, Some(storage)).await?;
         Ok(())
     }
 

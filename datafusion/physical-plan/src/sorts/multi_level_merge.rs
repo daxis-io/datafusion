@@ -18,6 +18,7 @@
 //! Create a stream that do a multi level merge stream
 
 use crate::metrics::BaselineMetrics;
+use crate::spill::ExternalSpillManager;
 use crate::{EmptyRecordBatchStream, SpillManager};
 use arrow::array::RecordBatch;
 use std::fmt::{Debug, Formatter};
@@ -31,12 +32,17 @@ use datafusion_common::Result;
 use datafusion_execution::memory_pool::MemoryReservation;
 
 use crate::sorts::sort::get_reserved_bytes_for_record_batch_size;
-use crate::sorts::streaming_merge::{SortedSpillFile, StreamingMergeBuilder};
+use crate::sorts::streaming_merge::{
+    SortedSpillFile, SortedSpillFileHandle, StreamingMergeBuilder,
+};
 use crate::stream::RecordBatchStreamAdapter;
 use datafusion_execution::{RecordBatchStream, SendableRecordBatchStream};
 use datafusion_physical_expr_common::sort_expr::LexOrdering;
 use futures::TryStreamExt;
 use futures::{Stream, StreamExt};
+
+const EXTERNAL_SPILL_MAX_MERGE_FAN_IN: usize = 8;
+const EXTERNAL_SPILL_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Merges a stream of sorted cursors and record batches into a single sorted stream
 ///
@@ -127,6 +133,7 @@ use futures::{Stream, StreamExt};
 /// 3. **Spill-to-Disk**: Spill to disk when we cannot merge all files in memory
 pub(crate) struct MultiLevelMergeBuilder {
     spill_manager: SpillManager,
+    external_spill_manager: Option<ExternalSpillManager>,
     schema: SchemaRef,
     sorted_spill_files: Vec<SortedSpillFile>,
     sorted_streams: Vec<SendableRecordBatchStream>,
@@ -148,6 +155,7 @@ impl MultiLevelMergeBuilder {
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         spill_manager: SpillManager,
+        external_spill_manager: Option<ExternalSpillManager>,
         schema: SchemaRef,
         sorted_spill_files: Vec<SortedSpillFile>,
         sorted_streams: Vec<SendableRecordBatchStream>,
@@ -160,6 +168,7 @@ impl MultiLevelMergeBuilder {
     ) -> Self {
         Self {
             spill_manager,
+            external_spill_manager,
             schema,
             sorted_spill_files,
             sorted_streams,
@@ -181,7 +190,10 @@ impl MultiLevelMergeBuilder {
 
     async fn create_stream(mut self) -> Result<SendableRecordBatchStream> {
         loop {
-            let mut stream = self.merge_sorted_runs_within_mem_limit()?;
+            if let Some(manager) = &self.external_spill_manager {
+                manager.record_merge_pass();
+            }
+            let mut stream = self.merge_sorted_runs_within_mem_limit().await?;
 
             // TODO - add a threshold for number of files to disk even if empty and reading from disk so
             //        we can avoid the memory reservation
@@ -198,14 +210,27 @@ impl MultiLevelMergeBuilder {
             }
 
             // Need to sort to a spill file
-            let Some((spill_file, max_record_batch_memory)) = self
-                .spill_manager
-                .spill_record_batch_stream_and_return_max_batch_memory(
-                    &mut stream,
-                    "MultiLevelMergeBuilder intermediate spill",
+            let spilled = if let Some(manager) = &self.external_spill_manager {
+                manager.spill_record_batch_stream(&mut stream).await?.map(
+                    |(file, max_record_batch_memory)| {
+                        (
+                            SortedSpillFileHandle::External(file),
+                            max_record_batch_memory,
+                        )
+                    },
                 )
-                .await?
-            else {
+            } else {
+                self.spill_manager
+                    .spill_record_batch_stream_and_return_max_batch_memory(
+                        &mut stream,
+                        "MultiLevelMergeBuilder intermediate spill",
+                    )
+                    .await?
+                    .map(|(file, max_record_batch_memory)| {
+                        (SortedSpillFileHandle::Native(file), max_record_batch_memory)
+                    })
+            };
+            let Some((spill_file, max_record_batch_memory)) = spilled else {
                 continue;
             };
 
@@ -219,7 +244,7 @@ impl MultiLevelMergeBuilder {
 
     /// This tries to create a stream that merges the most sorted streams and sorted spill files
     /// as possible within the memory limit.
-    fn merge_sorted_runs_within_mem_limit(
+    async fn merge_sorted_runs_within_mem_limit(
         &mut self,
     ) -> Result<SendableRecordBatchStream> {
         match (self.sorted_spill_files.len(), self.sorted_streams.len()) {
@@ -236,8 +261,7 @@ impl MultiLevelMergeBuilder {
                 let spill_file = self.sorted_spill_files.remove(0);
 
                 // Not reserving any memory for this disk as we are not holding it in memory
-                self.spill_manager
-                    .read_spill_as_stream(spill_file.file, None)
+                self.read_spill_as_stream(spill_file.file, None, 2).await
             }
 
             // Only in memory streams, so merge them all in a single pass
@@ -271,13 +295,12 @@ impl MultiLevelMergeBuilder {
 
                 for spill in sorted_spill_files {
                     let stream = self
-                        .spill_manager
-                        .clone()
-                        .with_batch_read_buffer_capacity(buffer_size)
                         .read_spill_as_stream(
                             spill.file,
                             Some(spill.max_record_batch_memory),
-                        )?;
+                            buffer_size,
+                        )
+                        .await?;
                     sorted_streams.push(stream);
                 }
                 let merge_sort_stream = self.create_new_merge_sort(
@@ -305,6 +328,31 @@ impl MultiLevelMergeBuilder {
                         memory_reservation,
                     )))
                 }
+            }
+        }
+    }
+
+    async fn read_spill_as_stream(
+        &mut self,
+        file: SortedSpillFileHandle,
+        max_record_batch_memory: Option<usize>,
+        batch_read_buffer_capacity: usize,
+    ) -> Result<SendableRecordBatchStream> {
+        match file {
+            SortedSpillFileHandle::Native(file) => self
+                .spill_manager
+                .clone()
+                .with_batch_read_buffer_capacity(batch_read_buffer_capacity)
+                .read_spill_as_stream(file, max_record_batch_memory),
+            SortedSpillFileHandle::External(file) => {
+                let manager = self.external_spill_manager.as_ref().ok_or_else(|| {
+                    datafusion_common::internal_datafusion_err!(
+                        "external spill file is missing its spill manager"
+                    )
+                })?;
+                manager
+                    .read_spill_as_stream(file, EXTERNAL_SPILL_READ_CHUNK_BYTES)
+                    .await
             }
         }
     }
@@ -358,6 +406,12 @@ impl MultiLevelMergeBuilder {
         let mut number_of_spills_to_read_for_current_phase = 0;
 
         for spill in &self.sorted_spill_files {
+            if self.external_spill_manager.is_some()
+                && number_of_spills_to_read_for_current_phase
+                    >= EXTERNAL_SPILL_MAX_MERGE_FAN_IN
+            {
+                break;
+            }
             // For memory pools that are not shared this is good, for other this is not
             // and there should be some upper limit to memory reservation so we won't starve the system
             match reservation.try_grow(

@@ -24,6 +24,7 @@ use crate::sorts::{
     merge::SortPreservingMergeStream,
     stream::{FieldCursorStream, RowCursorStream},
 };
+use crate::spill::ExternalSpillManager;
 use crate::{SendableRecordBatchStream, SpillManager};
 use arrow::array::*;
 use arrow::datatypes::{DataType, SchemaRef};
@@ -33,6 +34,7 @@ use datafusion_execution::disk_manager::RefCountedTempFile;
 use datafusion_execution::memory_pool::{
     MemoryConsumer, MemoryPool, MemoryReservation, UnboundedMemoryPool,
 };
+use datafusion_execution::spill_storage::SpillFileRef;
 use datafusion_physical_expr_common::sort_expr::LexOrdering;
 use std::sync::Arc;
 
@@ -58,8 +60,13 @@ macro_rules! merge_helper {
     }};
 }
 
+pub enum SortedSpillFileHandle {
+    Native(RefCountedTempFile),
+    External(SpillFileRef),
+}
+
 pub struct SortedSpillFile {
-    pub file: RefCountedTempFile,
+    pub file: SortedSpillFileHandle,
 
     /// how much memory the largest memory batch is taking
     pub max_record_batch_memory: usize,
@@ -67,10 +74,13 @@ pub struct SortedSpillFile {
 
 impl std::fmt::Debug for SortedSpillFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let backend = match self.file {
+            SortedSpillFileHandle::Native(_) => "native",
+            SortedSpillFileHandle::External(_) => "external",
+        };
         write!(
             f,
-            "SortedSpillFile({:?}) takes {}",
-            self.file.path(),
+            "SortedSpillFile({backend}) takes {}",
             human_readable_size(self.max_record_batch_memory)
         )
     }
@@ -81,6 +91,7 @@ pub struct StreamingMergeBuilder<'a> {
     streams: Vec<SendableRecordBatchStream>,
     sorted_spill_files: Vec<SortedSpillFile>,
     spill_manager: Option<SpillManager>,
+    external_spill_manager: Option<ExternalSpillManager>,
     schema: Option<SchemaRef>,
     expressions: Option<&'a LexOrdering>,
     metrics: Option<BaselineMetrics>,
@@ -113,6 +124,14 @@ impl<'a> StreamingMergeBuilder<'a> {
 
     pub fn with_spill_manager(mut self, spill_manager: SpillManager) -> Self {
         self.spill_manager = Some(spill_manager);
+        self
+    }
+
+    pub fn with_external_spill_manager(
+        mut self,
+        spill_manager: ExternalSpillManager,
+    ) -> Self {
+        self.external_spill_manager = Some(spill_manager);
         self
     }
 
@@ -174,6 +193,7 @@ impl<'a> StreamingMergeBuilder<'a> {
             streams,
             sorted_spill_files,
             spill_manager,
+            external_spill_manager,
             schema,
             metrics,
             batch_size,
@@ -199,6 +219,7 @@ impl<'a> StreamingMergeBuilder<'a> {
 
             return Ok(MultiLevelMergeBuilder::new(
                 spill_manager.expect("spill_manager should exist"),
+                external_spill_manager,
                 schema,
                 sorted_spill_files,
                 streams,

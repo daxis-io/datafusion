@@ -40,7 +40,9 @@ use crate::metrics::{
 };
 use crate::projection::{ProjectionExec, make_with_child, update_ordering};
 use crate::sorts::IncrementalSortIterator;
-use crate::sorts::streaming_merge::{SortedSpillFile, StreamingMergeBuilder};
+use crate::sorts::streaming_merge::{
+    SortedSpillFile, SortedSpillFileHandle, StreamingMergeBuilder,
+};
 use crate::spill::get_record_batch_memory_size;
 use crate::spill::in_progress_spill_file::InProgressSpillFile;
 use crate::spill::spill_manager::{GetSlicedSize, SpillManager};
@@ -442,7 +444,7 @@ impl ExternalSorter {
 
         if let Some(spill_file) = spill_file {
             self.finished_spill_files.push(SortedSpillFile {
-                file: spill_file,
+                file: SortedSpillFileHandle::Native(spill_file),
                 max_record_batch_memory,
             });
         }

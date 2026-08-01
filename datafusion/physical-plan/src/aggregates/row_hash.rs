@@ -30,7 +30,10 @@ use crate::aggregates::{
     create_schema, evaluate_group_by, evaluate_many, evaluate_optional,
 };
 use crate::metrics::{BaselineMetrics, MetricBuilder, RecordOutput};
-use crate::sorts::streaming_merge::{SortedSpillFile, StreamingMergeBuilder};
+use crate::sorts::streaming_merge::{
+    SortedSpillFile, SortedSpillFileHandle, StreamingMergeBuilder,
+};
+use crate::spill::ExternalSpillManager;
 use crate::spill::spill_manager::{GetSlicedSize, SpillManager};
 use crate::{PhysicalExpr, aggregates, metrics};
 use crate::{RecordBatchStream, SendableRecordBatchStream};
@@ -44,6 +47,7 @@ use datafusion_common::{
 use datafusion_execution::TaskContext;
 use datafusion_execution::memory_pool::proxy::VecAllocExt;
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion_execution::spill_storage::{SpillStorage, configured_spill_storage};
 use datafusion_expr::{EmitTo, GroupsAccumulator};
 use datafusion_physical_expr::aggregate::AggregateFunctionExpr;
 use datafusion_physical_expr::expressions::Column;
@@ -53,14 +57,19 @@ use datafusion_physical_expr_common::sort_expr::LexOrdering;
 use crate::sorts::IncrementalSortIterator;
 use datafusion_common::instant::Instant;
 use datafusion_common::utils::memory::get_record_batch_memory_size;
-use futures::ready;
+use futures::future::BoxFuture;
 use futures::stream::{Stream, StreamExt};
+use futures::{FutureExt, ready};
 use log::debug;
 
-#[derive(Debug, Clone)]
 /// This object tracks the aggregation phase (input/output)
-pub(crate) enum ExecutionState {
+enum ExecutionState {
     ReadingInput,
+    /// An external spill write is waiting for browser or native storage.
+    Spilling(PendingSpill),
+    /// Spill inputs have been consumed and query-scoped storage is being
+    /// deleted before the final aggregate result is exposed.
+    CleaningUp(PendingCleanup),
     /// When producing output, the remaining rows to output are stored
     /// here and are sliced off as needed in batch_size chunks
     ProducingOutput(RecordBatch),
@@ -71,6 +80,35 @@ pub(crate) enum ExecutionState {
     SkippingAggregation,
     /// All input has been consumed and all groups have been emitted
     Done,
+}
+
+#[derive(Clone, Copy)]
+enum SpillContinuation {
+    ContinueReadingInput,
+    StartMerge,
+}
+
+struct PendingSpill {
+    future: BoxFuture<'static, Result<CompletedSpill>>,
+    continuation: SpillContinuation,
+}
+
+struct CompletedSpill {
+    manager: ExternalSpillManager,
+    file: datafusion_execution::spill_storage::SpillFileRef,
+    max_record_batch_memory: usize,
+    spilled_rows: usize,
+    spilled_bytes: usize,
+}
+
+struct PendingCleanup {
+    future: BoxFuture<'static, Result<()>>,
+    outcome: CleanupOutcome,
+}
+
+enum CleanupOutcome {
+    Output(Option<RecordBatch>),
+    Error(DataFusionError),
 }
 
 /// This encapsulates the spilling state
@@ -94,6 +132,12 @@ struct SpillState {
 
     /// Manages the process of spilling and reading back intermediate data
     spill_manager: SpillManager,
+
+    /// Storage-neutral backend installed in the runtime.
+    spill_storage: Arc<dyn SpillStorage>,
+
+    /// Lazily initialized query-scoped external spill manager.
+    external_spill_manager: Option<ExternalSpillManager>,
 
     // ========================================================================
     // STATES:
@@ -566,6 +610,10 @@ impl GroupedHashAggregateStream {
             .join(", ");
         let name = format!("GroupedHashAggregateStream[{partition}] ({agg_fn_names})");
         let group_ordering = GroupOrdering::try_new(&agg.input_order_mode)?;
+        let spill_storage = configured_spill_storage(
+            context.session_config(),
+            Arc::clone(&context.runtime_env().disk_manager),
+        );
         let oom_mode = match (agg.mode, &group_ordering) {
             // In partial aggregation mode, always prefer to emit incomplete results early.
             (AggregateMode::Partial, _) => OutOfMemoryMode::EmitEarly,
@@ -573,7 +621,7 @@ impl GroupedHashAggregateStream {
             // Instead, use disk spilling to store sorted, incomplete results, and merge them
             // afterwards.
             (_, GroupOrdering::None | GroupOrdering::Partial(_))
-                if context.runtime_env().disk_manager.tmp_files_enabled() =>
+                if spill_storage.supports_spill() =>
             {
                 OutOfMemoryMode::Spill
             }
@@ -614,6 +662,8 @@ impl GroupedHashAggregateStream {
             merging_group_by: PhysicalGroupBy::new_single(merging_group_by_expr),
             peak_mem_used: MetricBuilder::new(&agg.metrics)
                 .gauge("peak_mem_used", partition),
+            spill_storage,
+            external_spill_manager: None,
             spill_manager,
         };
 
@@ -712,7 +762,7 @@ impl Stream for GroupedHashAggregateStream {
     ) -> Poll<Option<Self::Item>> {
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
 
-        loop {
+        'poll: loop {
             match &self.exec_state {
                 ExecutionState::ReadingInput => 'reading_input: {
                     match ready!(self.input.poll_next_unpin(cx)) {
@@ -793,7 +843,12 @@ impl Stream for GroupedHashAggregateStream {
 
                         // Found error from input stream
                         Some(Err(e)) => {
-                            // inner had error, return to caller
+                            if self.spill_state.external_spill_manager.is_some() {
+                                assert!(
+                                    self.start_external_cleanup(CleanupOutcome::Error(e))
+                                );
+                                continue 'poll;
+                            }
                             return Poll::Ready(Some(Err(e)));
                         }
 
@@ -801,6 +856,99 @@ impl Stream for GroupedHashAggregateStream {
                         None => {
                             // inner is done, emit all rows and switch to producing output
                             self.set_input_done_and_produce_output()?;
+                        }
+                    }
+                }
+
+                ExecutionState::Spilling(_) => {
+                    let ExecutionState::Spilling(mut pending) =
+                        std::mem::replace(&mut self.exec_state, ExecutionState::Done)
+                    else {
+                        unreachable!()
+                    };
+
+                    let completed = match pending.future.poll_unpin(cx) {
+                        Poll::Pending => {
+                            self.exec_state = ExecutionState::Spilling(pending);
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Ok(completed)) => completed,
+                        Poll::Ready(Err(error)) => {
+                            return Poll::Ready(Some(Err(error)));
+                        }
+                    };
+
+                    self.spill_state
+                        .spill_manager
+                        .metrics
+                        .spill_file_count
+                        .add(1);
+                    self.spill_state
+                        .spill_manager
+                        .metrics
+                        .spilled_rows
+                        .add(completed.spilled_rows);
+                    self.spill_state
+                        .spill_manager
+                        .metrics
+                        .spilled_bytes
+                        .add(completed.spilled_bytes);
+                    self.spill_state.external_spill_manager = Some(completed.manager);
+                    self.spill_state.spills.push(SortedSpillFile {
+                        file: SortedSpillFileHandle::External(completed.file),
+                        max_record_batch_memory: completed.max_record_batch_memory,
+                    });
+
+                    match pending.continuation {
+                        SpillContinuation::ContinueReadingInput => {
+                            self.update_memory_reservation()?;
+                            self.exec_state = ExecutionState::ReadingInput;
+                        }
+                        SpillContinuation::StartMerge => {
+                            self.start_stream_merge()?;
+                        }
+                    }
+                }
+
+                ExecutionState::CleaningUp(_) => {
+                    let ExecutionState::CleaningUp(mut pending) =
+                        std::mem::replace(&mut self.exec_state, ExecutionState::Done)
+                    else {
+                        unreachable!()
+                    };
+
+                    match pending.future.poll_unpin(cx) {
+                        Poll::Pending => {
+                            self.exec_state = ExecutionState::CleaningUp(pending);
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Err(error)) => match pending.outcome {
+                            CleanupOutcome::Error(original) => {
+                                return Poll::Ready(Some(Err(DataFusionError::Context(
+                                    format!(
+                                        "external spill cleanup failed after execution error: {original}"
+                                    ),
+                                    Box::new(error),
+                                ))));
+                            }
+                            CleanupOutcome::Output(_) => {
+                                return Poll::Ready(Some(Err(error)));
+                            }
+                        },
+                        Poll::Ready(Ok(())) => {
+                            self.spill_state.external_spill_manager = None;
+                            match pending.outcome {
+                                CleanupOutcome::Output(output) => {
+                                    self.exec_state = output.map_or(
+                                        ExecutionState::Done,
+                                        ExecutionState::ProducingOutput,
+                                    );
+                                }
+                                CleanupOutcome::Error(error) => {
+                                    self.exec_state = ExecutionState::Done;
+                                    return Poll::Ready(Some(Err(error)));
+                                }
+                            }
                         }
                     }
                 }
@@ -1023,9 +1171,9 @@ impl GroupedHashAggregateStream {
 
         match self.oom_mode {
             OutOfMemoryMode::Spill if !self.group_values.is_empty() => {
-                self.spill()?;
-                self.clear_shrink(self.batch_size);
-                self.update_memory_reservation()?;
+                if !self.start_spill(SpillContinuation::ContinueReadingInput)? {
+                    self.update_memory_reservation()?;
+                }
                 Ok(None)
             }
             OutOfMemoryMode::EmitEarly if self.group_values.len() > 1 => {
@@ -1135,10 +1283,10 @@ impl GroupedHashAggregateStream {
     /// Emit all intermediate aggregation states, sort them, and store them on disk.
     /// This process helps in reducing memory pressure by allowing the data to be
     /// read back with streaming merge.
-    fn spill(&mut self) -> Result<()> {
+    fn start_spill(&mut self, continuation: SpillContinuation) -> Result<bool> {
         // Emit and sort intermediate aggregation state
         let Some(emit) = self.emit(EmitTo::All, true)? else {
-            return Ok(());
+            return Ok(false);
         };
 
         // Free accumulated state now that data has been emitted into `emit`.
@@ -1165,37 +1313,101 @@ impl GroupedHashAggregateStream {
             )
         })?;
 
-        let sorted_iter = IncrementalSortIterator::new(
+        let sorted_batches = IncrementalSortIterator::new(
             emit,
             self.spill_state.spill_expr.clone(),
             self.batch_size,
-        );
-        let spillfile = self
-            .spill_state
-            .spill_manager
-            .spill_record_batch_iter_and_return_max_batch_memory(
-                sorted_iter,
-                "HashAggSpill",
-            )?;
+        )
+        .collect::<Result<Vec<_>>>()?;
+        if sorted_batches.is_empty() {
+            return internal_err!("Calling spill with no intermediate batch to spill");
+        }
 
-        // Shrink the memory we allocated for sorting as the sorting is fully done at this point.
-        self.reservation.shrink(sort_memory);
+        let max_record_batch_memory = sorted_batches
+            .iter()
+            .map(get_record_batch_memory_size)
+            .max()
+            .unwrap_or(0);
+        let spilled_rows = sorted_batches.iter().map(RecordBatch::num_rows).sum();
 
-        match spillfile {
-            Some((spillfile, max_record_batch_memory)) => {
-                self.spill_state.spills.push(SortedSpillFile {
-                    file: spillfile,
-                    max_record_batch_memory,
-                })
-            }
-            None => {
+        if !self.spill_state.spill_storage.uses_external_bridge() {
+            let spillfile = self
+                .spill_state
+                .spill_manager
+                .spill_record_batch_iter_and_return_max_batch_memory(
+                    sorted_batches.iter().map(Ok::<_, DataFusionError>),
+                    "HashAggSpill",
+                )?;
+            self.reservation.shrink(sort_memory);
+
+            let Some((file, max_record_batch_memory)) = spillfile else {
                 return internal_err!(
                     "Calling spill with no intermediate batch to spill"
                 );
-            }
+            };
+            self.spill_state.spills.push(SortedSpillFile {
+                file: SortedSpillFileHandle::Native(file),
+                max_record_batch_memory,
+            });
+            return Ok(false);
         }
 
-        Ok(())
+        let sort_reservation = self.reservation.split(sort_memory);
+        // `sort_memory` intentionally includes one output-batch-sized copy
+        // budget. Transfer that headroom to the IPC bridge instead of charging
+        // the same bytes twice while sorted batches are still alive.
+        let bridge_headroom = sort_memory.saturating_sub(batch_memory);
+        let bridge_reservation = sort_reservation.split(bridge_headroom);
+        bridge_reservation.free();
+        let existing_manager = self.spill_state.external_spill_manager.clone();
+        let storage = Arc::clone(&self.spill_state.spill_storage);
+        let schema = Arc::clone(&self.spill_state.spill_schema);
+
+        let future = async move {
+            let manager = match existing_manager {
+                Some(manager) => manager,
+                None => {
+                    ExternalSpillManager::try_new_with_reservation(
+                        storage,
+                        schema,
+                        bridge_reservation,
+                    )
+                    .await?
+                }
+            };
+            let bytes_before = manager.metrics().current_bytes;
+            let result = manager.spill_record_batches(&sorted_batches).await;
+            drop(sort_reservation);
+
+            match result {
+                Ok(file) => {
+                    let spilled_bytes = manager
+                        .metrics()
+                        .current_bytes
+                        .saturating_sub(bytes_before)
+                        .try_into()
+                        .unwrap_or(usize::MAX);
+                    Ok(CompletedSpill {
+                        manager,
+                        file,
+                        max_record_batch_memory,
+                        spilled_rows,
+                        spilled_bytes,
+                    })
+                }
+                Err(error) => {
+                    let _ = manager.delete_scope().await;
+                    Err(error)
+                }
+            }
+        }
+        .boxed();
+
+        self.exec_state = ExecutionState::Spilling(PendingSpill {
+            future,
+            continuation,
+        });
+        Ok(true)
     }
 
     /// Clear memory and shrink capacities to the given number of rows.
@@ -1219,6 +1431,17 @@ impl GroupedHashAggregateStream {
         group_values_soft_limit <= self.group_values.len()
     }
 
+    fn start_external_cleanup(&mut self, outcome: CleanupOutcome) -> bool {
+        let Some(manager) = self.spill_state.external_spill_manager.clone() else {
+            return false;
+        };
+        self.exec_state = ExecutionState::CleaningUp(PendingCleanup {
+            future: async move { manager.delete_scope().await }.boxed(),
+            outcome,
+        });
+        true
+    }
+
     /// Finalizes reading of the input stream and prepares for producing output values.
     ///
     /// This method is called both when the original input stream and,
@@ -1228,14 +1451,24 @@ impl GroupedHashAggregateStream {
         self.group_ordering.input_done();
         let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
         let timer = elapsed_compute.timer();
-        self.exec_state = if self.spill_state.spills.is_empty() {
+        if self.spill_state.spills.is_empty() {
             // Input has been entirely processed without spilling to disk.
 
             // Flush any remaining group values.
             let batch = self.emit(EmitTo::All, false)?;
 
-            // If there are none, we're done; otherwise switch to emitting them
-            batch.map_or(ExecutionState::Done, ExecutionState::ProducingOutput)
+            if self.spill_state.is_stream_merging
+                && let Some(manager) = self.spill_state.external_spill_manager.clone()
+            {
+                self.exec_state = ExecutionState::CleaningUp(PendingCleanup {
+                    future: async move { manager.delete_scope().await }.boxed(),
+                    outcome: CleanupOutcome::Output(batch),
+                });
+            } else {
+                // If there are none, we're done; otherwise switch to emitting them
+                self.exec_state =
+                    batch.map_or(ExecutionState::Done, ExecutionState::ProducingOutput);
+            }
         } else {
             // Spill any remaining data to disk. There is some performance overhead in
             // writing out this last chunk of data and reading it back. The benefit of
@@ -1244,50 +1477,57 @@ impl GroupedHashAggregateStream {
             // instead.
             // Spilling to disk and reading back also ensures batch size is consistent
             // rather than potentially having one significantly larger last batch.
-            self.spill()?;
-
-            // Mark that we're switching to stream merging mode.
-            self.spill_state.is_stream_merging = true;
-
-            self.input = StreamingMergeBuilder::new()
-                .with_schema(Arc::clone(&self.spill_state.spill_schema))
-                .with_spill_manager(self.spill_state.spill_manager.clone())
-                .with_sorted_spill_files(std::mem::take(&mut self.spill_state.spills))
-                .with_expressions(&self.spill_state.spill_expr)
-                .with_metrics(self.baseline_metrics.clone())
-                .with_batch_size(self.batch_size)
-                .with_reservation(self.reservation.new_empty())
-                .build()?;
-            self.input_done = false;
-
-            // Reset the group values collectors.
-            self.clear_all();
-
-            // We can now use `GroupOrdering::Full` since the spill files are sorted
-            // on the grouping columns.
-            self.group_ordering = GroupOrdering::Full(GroupOrderingFull::new());
-
-            // Recreate group_values to use streaming mode (GroupValuesColumn<true>
-            // with scalarized_intern) which preserves input row order, as required
-            // by GroupOrderingFull. This is only needed for multi-column group by,
-            // since single-column uses GroupValuesPrimitive which is always safe.
-            let group_schema = self
-                .spill_state
-                .merging_group_by
-                .group_schema(&self.spill_state.spill_schema)?;
-            if group_schema.fields().len() > 1 {
-                self.group_values = new_group_values(group_schema, &self.group_ordering)?;
+            if !self.start_spill(SpillContinuation::StartMerge)? {
+                self.start_stream_merge()?;
             }
-
-            // Use `OutOfMemoryMode::ReportError` from this point on
-            // to ensure we don't spill the spilled data to disk again.
-            self.oom_mode = OutOfMemoryMode::ReportError;
-
-            self.update_memory_reservation()?;
-
-            ExecutionState::ReadingInput
-        };
+        }
         timer.done();
+        Ok(())
+    }
+
+    fn start_stream_merge(&mut self) -> Result<()> {
+        // Mark that we're switching to stream merging mode.
+        self.spill_state.is_stream_merging = true;
+
+        let mut builder = StreamingMergeBuilder::new()
+            .with_schema(Arc::clone(&self.spill_state.spill_schema))
+            .with_spill_manager(self.spill_state.spill_manager.clone())
+            .with_sorted_spill_files(std::mem::take(&mut self.spill_state.spills))
+            .with_expressions(&self.spill_state.spill_expr)
+            .with_metrics(self.baseline_metrics.clone())
+            .with_batch_size(self.batch_size)
+            .with_reservation(self.reservation.new_empty());
+        if let Some(manager) = self.spill_state.external_spill_manager.clone() {
+            builder = builder.with_external_spill_manager(manager);
+        }
+        self.input = builder.build()?;
+        self.input_done = false;
+
+        // Reset the group values collectors.
+        self.clear_all();
+
+        // We can now use `GroupOrdering::Full` since the spill files are sorted
+        // on the grouping columns.
+        self.group_ordering = GroupOrdering::Full(GroupOrderingFull::new());
+
+        // Recreate group_values to use streaming mode (GroupValuesColumn<true>
+        // with scalarized_intern) which preserves input row order, as required
+        // by GroupOrderingFull. This is only needed for multi-column group by,
+        // since single-column uses GroupValuesPrimitive which is always safe.
+        let group_schema = self
+            .spill_state
+            .merging_group_by
+            .group_schema(&self.spill_state.spill_schema)?;
+        if group_schema.fields().len() > 1 {
+            self.group_values = new_group_values(group_schema, &self.group_ordering)?;
+        }
+
+        // Use `OutOfMemoryMode::ReportError` from this point on
+        // to ensure we don't spill the spilled data to disk again.
+        self.oom_mode = OutOfMemoryMode::ReportError;
+
+        self.update_memory_reservation()?;
+        self.exec_state = ExecutionState::ReadingInput;
         Ok(())
     }
 

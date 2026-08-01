@@ -110,15 +110,19 @@ impl SpillManager {
         in_progress_file.finish()
     }
 
-    /// Spill an iterator of `RecordBatch`es to disk and return the spill file and the size of the largest batch in memory
-    /// Note that this expects the caller to provide *non-sliced* batches, so the memory calculation of each batch is accurate.
+    /// Spill an iterator of `RecordBatch`es to disk and return the spill file
+    /// and the size of the largest batch in memory.
+    ///
+    /// Retained for native callers and spill-manager conformance tests. New
+    /// external-memory operators should use the asynchronous storage-neutral
+    /// bridge.
+    #[allow(dead_code)]
     pub(crate) fn spill_record_batch_iter_and_return_max_batch_memory(
         &self,
         mut iter: impl Iterator<Item = Result<impl Borrow<RecordBatch>>>,
         request_description: &str,
     ) -> Result<Option<(RefCountedTempFile, usize)>> {
         let mut in_progress_file = self.create_in_progress_file(request_description)?;
-
         let mut max_record_batch_size = 0;
 
         iter.try_for_each(|batch| {
@@ -128,15 +132,13 @@ impl SpillManager {
                 return Ok(());
             }
             in_progress_file.append_batch(borrowed)?;
-
             max_record_batch_size =
                 max_record_batch_size.max(get_record_batch_memory_size(borrowed));
             Result::<_, DataFusionError>::Ok(())
         })?;
 
         let file = in_progress_file.finish()?;
-
-        Ok(file.map(|f| (f, max_record_batch_size)))
+        Ok(file.map(|file| (file, max_record_batch_size)))
     }
 
     /// Spill a stream of `RecordBatch`es to disk and return the spill file and the size of the largest batch in memory

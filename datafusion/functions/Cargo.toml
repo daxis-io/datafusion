@@ -90,6 +90,10 @@ sha2 = { workspace = true, optional = true }
 unicode-segmentation = { version = "^1.7.1", optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js", "v4"], optional = true }
+
 [dev-dependencies]
 arrow = { workspace = true, features = ["test_utils"] }
 criterion = { workspace = true }

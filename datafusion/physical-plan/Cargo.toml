@@ -75,6 +75,9 @@ tokio = { workspace = true }
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 ahash = { workspace = true, features = ["runtime-rng"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+tokio = { workspace = true, features = ["time"] }
+
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_futures"] }
 datafusion-functions-aggregate = { workspace = true }
