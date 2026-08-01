@@ -20,6 +20,9 @@
 pub(crate) mod in_progress_spill_file;
 pub(crate) mod spill_manager;
 pub mod spill_pool;
+pub(crate) mod storage_spill;
+#[cfg(test)]
+pub(crate) mod test_storage;
 
 // Moved for refactor, re-export to keep the public API stable
 pub use datafusion_common::utils::memory::get_record_batch_memory_size;

@@ -31,7 +31,8 @@ use crate::aggregates::{
 };
 use crate::metrics::{BaselineMetrics, MetricBuilder, RecordOutput};
 use crate::sorts::streaming_merge::{SortedSpillFile, StreamingMergeBuilder};
-use crate::spill::spill_manager::{GetSlicedSize, SpillManager};
+use crate::spill::spill_manager::{GetSlicedSize, SpillFile, SpillManager};
+use crate::spill::storage_spill::StorageInProgressSpillFile;
 use crate::{PhysicalExpr, aggregates, metrics};
 use crate::{RecordBatchStream, SendableRecordBatchStream};
 
@@ -53,14 +54,17 @@ use datafusion_physical_expr_common::sort_expr::LexOrdering;
 use crate::sorts::IncrementalSortIterator;
 use datafusion_common::instant::Instant;
 use datafusion_common::utils::memory::get_record_batch_memory_size;
-use futures::ready;
+use futures::future::BoxFuture;
 use futures::stream::{Stream, StreamExt};
+use futures::{FutureExt, ready};
 use log::debug;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// This object tracks the aggregation phase (input/output)
-pub(crate) enum ExecutionState {
+enum ExecutionState {
     ReadingInput,
+    /// A sorted intermediate run is being acquired and written.
+    Spilling(SpillRunState),
     /// When producing output, the remaining rows to output are stored
     /// here and are sliced off as needed in batch_size chunks
     ProducingOutput(RecordBatch),
@@ -71,6 +75,77 @@ pub(crate) enum ExecutionState {
     SkippingAggregation,
     /// All input has been consumed and all groups have been emitted
     Done,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResumeAfterSpill {
+    ReadingInput,
+    StartMerge,
+}
+
+enum SpillWriterState {
+    Opening(BoxFuture<'static, Result<StorageInProgressSpillFile>>),
+    Writing(StorageInProgressSpillFile),
+    Done,
+}
+
+struct SpillRunState {
+    sorted: IncrementalSortIterator,
+    writer: SpillWriterState,
+    max_record_batch_memory: usize,
+    sort_memory: usize,
+    resume: ResumeAfterSpill,
+}
+
+impl std::fmt::Debug for SpillRunState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SpillRunState")
+            .field("max_record_batch_memory", &self.max_record_batch_memory)
+            .field("sort_memory", &self.sort_memory)
+            .field("resume", &self.resume)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SpillRunState {
+    fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<(SpillFile, usize)>> {
+        loop {
+            match &mut self.writer {
+                SpillWriterState::Opening(opening) => {
+                    let writer = ready!(opening.poll_unpin(cx))?;
+                    self.writer = SpillWriterState::Writing(writer);
+                }
+                SpillWriterState::Writing(writer) => match self.sorted.next() {
+                    Some(Ok(batch)) => {
+                        self.max_record_batch_memory = self
+                            .max_record_batch_memory
+                            .max(get_record_batch_memory_size(&batch));
+                        writer.append_batch(&batch)?;
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    Some(Err(error)) => return Poll::Ready(Err(error)),
+                    None => {
+                        let SpillWriterState::Writing(writer) =
+                            std::mem::replace(&mut self.writer, SpillWriterState::Done)
+                        else {
+                            unreachable!()
+                        };
+                        return Poll::Ready(Ok((
+                            SpillFile::Storage(writer.finish()?),
+                            self.max_record_batch_memory,
+                        )));
+                    }
+                },
+                SpillWriterState::Done => {
+                    return Poll::Ready(Err(DataFusionError::Internal(
+                        "aggregate spill writer was polled after completion".to_owned(),
+                    )));
+                }
+            }
+        }
+    }
 }
 
 /// This encapsulates the spilling state
@@ -573,7 +648,7 @@ impl GroupedHashAggregateStream {
             // Instead, use disk spilling to store sorted, incomplete results, and merge them
             // afterwards.
             (_, GroupOrdering::None | GroupOrdering::Partial(_))
-                if context.runtime_env().disk_manager.tmp_files_enabled() =>
+                if context.runtime_env().spill_storage().is_some() =>
             {
                 OutOfMemoryMode::Spill
             }
@@ -805,6 +880,42 @@ impl Stream for GroupedHashAggregateStream {
                     }
                 }
 
+                ExecutionState::Spilling(_) => {
+                    let ExecutionState::Spilling(mut spill) =
+                        std::mem::replace(&mut self.exec_state, ExecutionState::Done)
+                    else {
+                        unreachable!()
+                    };
+                    let sort_memory = spill.sort_memory;
+                    let resume = spill.resume;
+                    match spill.poll_write(cx) {
+                        Poll::Pending => {
+                            self.exec_state = ExecutionState::Spilling(spill);
+                            return Poll::Pending;
+                        }
+                        Poll::Ready(Ok((file, max_record_batch_memory))) => {
+                            self.reservation.shrink(sort_memory);
+                            self.spill_state.spills.push(SortedSpillFile {
+                                file,
+                                max_record_batch_memory,
+                            });
+                            match resume {
+                                ResumeAfterSpill::ReadingInput => {
+                                    self.update_memory_reservation()?;
+                                    self.exec_state = ExecutionState::ReadingInput;
+                                }
+                                ResumeAfterSpill::StartMerge => {
+                                    self.start_stream_merge()?;
+                                }
+                            }
+                        }
+                        Poll::Ready(Err(error)) => {
+                            self.reservation.shrink(sort_memory);
+                            return Poll::Ready(Some(Err(error)));
+                        }
+                    }
+                }
+
                 ExecutionState::SkippingAggregation => {
                     match ready!(self.input.poll_next_unpin(cx)) {
                         Some(Ok(batch)) => {
@@ -1023,10 +1134,7 @@ impl GroupedHashAggregateStream {
 
         match self.oom_mode {
             OutOfMemoryMode::Spill if !self.group_values.is_empty() => {
-                self.spill()?;
-                self.clear_shrink(self.batch_size);
-                self.update_memory_reservation()?;
-                Ok(None)
+                Ok(Some(self.prepare_spill(ResumeAfterSpill::ReadingInput)?))
             }
             OutOfMemoryMode::EmitEarly if self.group_values.len() > 1 => {
                 let n = if self.group_values.len() >= self.batch_size {
@@ -1135,10 +1243,10 @@ impl GroupedHashAggregateStream {
     /// Emit all intermediate aggregation states, sort them, and store them on disk.
     /// This process helps in reducing memory pressure by allowing the data to be
     /// read back with streaming merge.
-    fn spill(&mut self) -> Result<()> {
+    fn prepare_spill(&mut self, resume: ResumeAfterSpill) -> Result<ExecutionState> {
         // Emit and sort intermediate aggregation state
         let Some(emit) = self.emit(EmitTo::All, true)? else {
-            return Ok(());
+            return internal_err!("Calling spill with no intermediate batch to spill");
         };
 
         // Free accumulated state now that data has been emitted into `emit`.
@@ -1165,37 +1273,20 @@ impl GroupedHashAggregateStream {
             )
         })?;
 
-        let sorted_iter = IncrementalSortIterator::new(
+        let sorted = IncrementalSortIterator::new(
             emit,
             self.spill_state.spill_expr.clone(),
             self.batch_size,
         );
-        let spillfile = self
-            .spill_state
-            .spill_manager
-            .spill_record_batch_iter_and_return_max_batch_memory(
-                sorted_iter,
-                "HashAggSpill",
-            )?;
+        let writer = self.spill_state.spill_manager.start_storage_spill();
 
-        // Shrink the memory we allocated for sorting as the sorting is fully done at this point.
-        self.reservation.shrink(sort_memory);
-
-        match spillfile {
-            Some((spillfile, max_record_batch_memory)) => {
-                self.spill_state.spills.push(SortedSpillFile {
-                    file: spillfile,
-                    max_record_batch_memory,
-                })
-            }
-            None => {
-                return internal_err!(
-                    "Calling spill with no intermediate batch to spill"
-                );
-            }
-        }
-
-        Ok(())
+        Ok(ExecutionState::Spilling(SpillRunState {
+            sorted,
+            writer: SpillWriterState::Opening(writer),
+            max_record_batch_memory: 0,
+            sort_memory,
+            resume,
+        }))
     }
 
     /// Clear memory and shrink capacities to the given number of rows.
@@ -1244,50 +1335,47 @@ impl GroupedHashAggregateStream {
             // instead.
             // Spilling to disk and reading back also ensures batch size is consistent
             // rather than potentially having one significantly larger last batch.
-            self.spill()?;
-
-            // Mark that we're switching to stream merging mode.
-            self.spill_state.is_stream_merging = true;
-
-            self.input = StreamingMergeBuilder::new()
-                .with_schema(Arc::clone(&self.spill_state.spill_schema))
-                .with_spill_manager(self.spill_state.spill_manager.clone())
-                .with_sorted_spill_files(std::mem::take(&mut self.spill_state.spills))
-                .with_expressions(&self.spill_state.spill_expr)
-                .with_metrics(self.baseline_metrics.clone())
-                .with_batch_size(self.batch_size)
-                .with_reservation(self.reservation.new_empty())
-                .build()?;
-            self.input_done = false;
-
-            // Reset the group values collectors.
-            self.clear_all();
-
-            // We can now use `GroupOrdering::Full` since the spill files are sorted
-            // on the grouping columns.
-            self.group_ordering = GroupOrdering::Full(GroupOrderingFull::new());
-
-            // Recreate group_values to use streaming mode (GroupValuesColumn<true>
-            // with scalarized_intern) which preserves input row order, as required
-            // by GroupOrderingFull. This is only needed for multi-column group by,
-            // since single-column uses GroupValuesPrimitive which is always safe.
-            let group_schema = self
-                .spill_state
-                .merging_group_by
-                .group_schema(&self.spill_state.spill_schema)?;
-            if group_schema.fields().len() > 1 {
-                self.group_values = new_group_values(group_schema, &self.group_ordering)?;
+            if self.group_values.is_empty() {
+                self.start_stream_merge()?;
+                self.exec_state = ExecutionState::ReadingInput;
+                ExecutionState::ReadingInput
+            } else {
+                self.prepare_spill(ResumeAfterSpill::StartMerge)?
             }
-
-            // Use `OutOfMemoryMode::ReportError` from this point on
-            // to ensure we don't spill the spilled data to disk again.
-            self.oom_mode = OutOfMemoryMode::ReportError;
-
-            self.update_memory_reservation()?;
-
-            ExecutionState::ReadingInput
         };
         timer.done();
+        Ok(())
+    }
+
+    fn start_stream_merge(&mut self) -> Result<()> {
+        self.spill_state.is_stream_merging = true;
+        if self.spill_state.spills.len() > 1 {
+            self.spill_state.spill_manager.record_merge_pass();
+        }
+        self.input = StreamingMergeBuilder::new()
+            .with_schema(Arc::clone(&self.spill_state.spill_schema))
+            .with_spill_manager(self.spill_state.spill_manager.clone())
+            .with_sorted_spill_files(std::mem::take(&mut self.spill_state.spills))
+            .with_expressions(&self.spill_state.spill_expr)
+            .with_metrics(self.baseline_metrics.clone())
+            .with_batch_size(self.batch_size)
+            .with_reservation(self.reservation.new_empty())
+            .build()?;
+        self.input_done = false;
+        self.clear_all();
+        self.group_ordering = GroupOrdering::Full(GroupOrderingFull::new());
+
+        let group_schema = self
+            .spill_state
+            .merging_group_by
+            .group_schema(&self.spill_state.spill_schema)?;
+        if group_schema.fields().len() > 1 {
+            self.group_values = new_group_values(group_schema, &self.group_ordering)?;
+        }
+
+        self.oom_mode = OutOfMemoryMode::ReportError;
+        self.update_memory_reservation()?;
+        self.exec_state = ExecutionState::ReadingInput;
         Ok(())
     }
 
@@ -1365,15 +1453,270 @@ mod tests {
     use super::*;
     use crate::InputOrderMode;
     use crate::execution_plan::ExecutionPlan;
+    use crate::spill::test_storage::{GatedWriterSpillStorage, YieldingSpillStorage};
     use crate::test::TestMemoryExec;
     use arrow::array::{Int32Array, Int64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion_execution::TaskContext;
+    use datafusion_execution::disk_manager::{DiskManager, DiskManagerMode};
+    use datafusion_execution::memory_pool::FairSpillPool;
     use datafusion_execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion_execution::spill_storage::{NativeSpillStorage, SpillStorage};
     use datafusion_functions_aggregate::count::count_udaf;
     use datafusion_physical_expr::aggregate::AggregateExprBuilder;
     use datafusion_physical_expr::expressions::col;
+    use futures::task::noop_waker_ref;
+    use futures::{Stream, TryStreamExt};
     use std::sync::Arc;
+    use std::task::Context;
+
+    #[test]
+    fn path_free_backend_makes_final_hash_aggregate_spillable() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("group_col", DataType::Int32, false),
+            Field::new("value_col", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int64Array::from(vec![10, 20])),
+            ],
+        )?;
+        let exec = TestMemoryExec::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+        let exec = Arc::new(TestMemoryExec::update_cache(&Arc::new(exec)));
+        let aggregate_exec = AggregateExec::try_new(
+            AggregateMode::Final,
+            PhysicalGroupBy::new_single(vec![(
+                col("group_col", &schema)?,
+                "group_col".to_string(),
+            )]),
+            vec![Arc::new(
+                AggregateExprBuilder::new(count_udaf(), vec![col("value_col", &schema)?])
+                    .schema(Arc::clone(&schema))
+                    .alias("count_value")
+                    .build()?,
+            )],
+            vec![None],
+            exec,
+            Arc::clone(&schema),
+        )?;
+
+        let native_disk = Arc::new(DiskManager::builder().build()?);
+        let storage: Arc<dyn SpillStorage> =
+            Arc::new(NativeSpillStorage::new(native_disk));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_disk_manager_builder(
+                DiskManager::builder().with_mode(DiskManagerMode::Disabled),
+            )
+            .with_spill_storage(storage)
+            .build_arc()?;
+        let task_ctx = Arc::new(TaskContext::default().with_runtime(runtime));
+
+        let stream = GroupedHashAggregateStream::new(&aggregate_exec, &task_ctx, 0)?;
+        assert_eq!(stream.oom_mode, OutOfMemoryMode::Spill);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grouped_hash_aggregate_spills_through_path_free_backend() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("group_col", DataType::Int32, false),
+            Field::new("value_col", DataType::Int64, true),
+        ]));
+        let num_groups = 10_000;
+        let num_rows = num_groups * 2;
+        let input_batches = (0..num_rows)
+            .step_by(1_000)
+            .map(|start| {
+                let end = (start + 1_000).min(num_rows);
+                let group_ids = (start..end)
+                    .map(|row| i32::try_from(row % num_groups).unwrap())
+                    .collect::<Vec<_>>();
+                let values = group_ids
+                    .iter()
+                    .map(|group| (group % 3 != 0).then_some(1_i64))
+                    .collect::<Vec<_>>();
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int32Array::from(group_ids)),
+                        Arc::new(Int64Array::from(values)),
+                    ],
+                )
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let exec = TestMemoryExec::try_new(&[input_batches], Arc::clone(&schema), None)?;
+        let exec = Arc::new(TestMemoryExec::update_cache(&Arc::new(exec)));
+        let aggregate_exec = AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(vec![(
+                col("group_col", &schema)?,
+                "group_col".to_string(),
+            )]),
+            vec![Arc::new(
+                AggregateExprBuilder::new(count_udaf(), vec![col("value_col", &schema)?])
+                    .schema(Arc::clone(&schema))
+                    .alias("count_value")
+                    .build()?,
+            )],
+            vec![None],
+            exec,
+            Arc::clone(&schema),
+        )?;
+
+        let native_disk = Arc::new(DiskManager::builder().build()?);
+        let storage = Arc::new(NativeSpillStorage::new(native_disk));
+        let delayed_storage = Arc::new(YieldingSpillStorage::new(storage.clone()));
+        let storage_backend: Arc<dyn SpillStorage> = delayed_storage.clone();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(FairSpillPool::new(512 * 1024)))
+            .with_disk_manager_builder(
+                DiskManager::builder().with_mode(DiskManagerMode::Disabled),
+            )
+            .with_spill_storage(storage_backend)
+            .build_arc()?;
+        let mut task_ctx = TaskContext::default().with_runtime(runtime);
+        let session_config = task_ctx
+            .session_config()
+            .clone()
+            .with_batch_size(256)
+            .with_target_partitions(1);
+        task_ctx = task_ctx.with_session_config(session_config);
+        let task_ctx = Arc::new(task_ctx);
+
+        let stream = GroupedHashAggregateStream::new(&aggregate_exec, &task_ctx, 0)?;
+        let output = stream.try_collect::<Vec<_>>().await?;
+        assert_eq!(
+            output.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            num_groups
+        );
+        let mut actual = output
+            .iter()
+            .flat_map(|batch| {
+                let groups = batch
+                    .column(0)
+                    .as_primitive::<arrow::datatypes::Int32Type>();
+                let counts = batch
+                    .column(1)
+                    .as_primitive::<arrow::datatypes::Int64Type>();
+                (0..batch.num_rows())
+                    .map(|row| (groups.value(row), counts.value(row)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        actual.sort_unstable_by_key(|(group, _)| *group);
+        assert_eq!(actual.len(), num_groups);
+        for (group, count) in actual {
+            assert_eq!(count, if group % 3 == 0 { 0 } else { 2 });
+        }
+        assert!(
+            storage.accounting().bytes_written > 0,
+            "the bounded aggregate must externalize at least one run"
+        );
+        assert!(
+            storage.accounting().merge_passes > 0,
+            "spilled aggregate runs must be streaming-merged"
+        );
+        assert!(
+            delayed_storage.pending_poll_count() > 0,
+            "aggregate execution must tolerate pending spill storage operations"
+        );
+        assert_eq!(
+            storage.accounting().active_files,
+            0,
+            "native adapter files must retain temporary-file RAII cleanup"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_aggregate_while_writer_acquisition_is_pending_releases_scope()
+    -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("group_col", DataType::Int32, false),
+            Field::new("value_col", DataType::Int64, false),
+        ]));
+        let num_groups = 10_000;
+        let input_batches = (0..num_groups)
+            .step_by(1_000)
+            .map(|start| {
+                let end = (start + 1_000).min(num_groups);
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int32Array::from(
+                            (start as i32..end as i32).collect::<Vec<_>>(),
+                        )),
+                        Arc::new(Int64Array::from(vec![1; end - start])),
+                    ],
+                )
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let exec = TestMemoryExec::try_new(&[input_batches], Arc::clone(&schema), None)?;
+        let exec = Arc::new(TestMemoryExec::update_cache(&Arc::new(exec)));
+        let aggregate_exec = AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(vec![(
+                col("group_col", &schema)?,
+                "group_col".to_string(),
+            )]),
+            vec![Arc::new(
+                AggregateExprBuilder::new(count_udaf(), vec![col("value_col", &schema)?])
+                    .schema(Arc::clone(&schema))
+                    .alias("count_value")
+                    .build()?,
+            )],
+            vec![None],
+            exec,
+            Arc::clone(&schema),
+        )?;
+
+        let native_disk = Arc::new(DiskManager::builder().build()?);
+        let native_storage = Arc::new(NativeSpillStorage::new(native_disk));
+        let (gated_storage, release_writer) =
+            GatedWriterSpillStorage::new(native_storage.clone());
+        let gated_storage = Arc::new(gated_storage);
+        let storage_backend: Arc<dyn SpillStorage> = gated_storage.clone();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(FairSpillPool::new(512 * 1024)))
+            .with_disk_manager_builder(
+                DiskManager::builder().with_mode(DiskManagerMode::Disabled),
+            )
+            .with_spill_storage(storage_backend)
+            .build_arc()?;
+        let mut task_ctx = TaskContext::default().with_runtime(runtime);
+        let session_config = task_ctx
+            .session_config()
+            .clone()
+            .with_batch_size(256)
+            .with_target_partitions(1);
+        task_ctx = task_ctx.with_session_config(session_config);
+        let task_ctx = Arc::new(task_ctx);
+        let mut stream = Box::pin(GroupedHashAggregateStream::new(
+            &aggregate_exec,
+            &task_ctx,
+            0,
+        )?);
+        let mut context = Context::from_waker(noop_waker_ref());
+
+        for _ in 0..100 {
+            let _ = Stream::poll_next(stream.as_mut(), &mut context);
+            if gated_storage.writer_acquisition_started() {
+                break;
+            }
+        }
+        assert!(
+            gated_storage.writer_acquisition_started(),
+            "aggregate must reach pending spill-writer acquisition"
+        );
+
+        drop(stream);
+        drop(release_writer);
+        assert_eq!(gated_storage.released_scope_count(), 1);
+        assert_eq!(native_storage.accounting().active_files, 0);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_double_emission_race_condition_bug() -> Result<()> {
