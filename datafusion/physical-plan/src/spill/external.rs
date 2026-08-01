@@ -120,13 +120,13 @@ impl ExternalSpillManager {
     ) -> Result<Option<(SpillFileRef, usize)>> {
         let (file, mut sink) = self.scope.create_file().await.map_err(storage_error)?;
         let buffer = SharedWriteBuffer::new(Arc::new(self.reservation.new_empty()));
-        let mut writer = StreamWriter::try_new(buffer.clone(), self.schema.as_ref())
-            .map_err(spill_ipc_error)?;
-        append_buffer(&buffer, sink.as_mut()).await?;
-
         let mut max_record_batch_memory = 0;
         let mut wrote_batch = false;
         let result = async {
+            let mut writer = StreamWriter::try_new(buffer.clone(), self.schema.as_ref())
+                .map_err(spill_ipc_error)?;
+            append_buffer(&buffer, sink.as_mut()).await?;
+
             while let Some(batch) = stream.next().await {
                 let batch = batch?;
                 wrote_batch = true;

@@ -32,7 +32,9 @@ use datafusion_execution::spill_storage::{
     SpillStorage, SpillStorageError, SpillStorageErrorReason, SpillStorageMetrics,
     SpillStorageResult,
 };
+use datafusion_physical_plan::SendableRecordBatchStream;
 use datafusion_physical_plan::spill::ExternalSpillManager;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{StreamExt, TryStreamExt, future::poll_fn, task::noop_waker};
 use parking_lot::Mutex;
 
@@ -331,6 +333,44 @@ fn external_spill_writer_oom_remains_resources_exhausted() {
                 datafusion_common::DataFusionError::ResourcesExhausted(_)
             ),
             "expected ResourcesExhausted, got {error:?}"
+        );
+    });
+}
+
+#[test]
+fn external_stream_spill_deletes_file_when_ipc_header_allocation_fails() {
+    futures::executor::block_on(async {
+        let (schema, batch) = sample_batch();
+        let storage = Arc::new(DelayedMemoryStorage::default());
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1));
+        let reservation = MemoryConsumer::new("external spill bridge").register(&pool);
+        let manager = ExternalSpillManager::try_new_with_reservation(
+            storage,
+            Arc::clone(&schema),
+            reservation,
+        )
+        .await
+        .unwrap();
+        let mut stream: SendableRecordBatchStream = Box::pin(
+            RecordBatchStreamAdapter::new(schema, futures::stream::iter(vec![Ok(batch)])),
+        );
+
+        let error = manager
+            .spill_record_batch_stream(&mut stream)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error.find_root(),
+                datafusion_common::DataFusionError::ResourcesExhausted(_)
+            ),
+            "expected ResourcesExhausted, got {error:?}"
+        );
+        assert_eq!(
+            manager.metrics().active_files,
+            0,
+            "a failed IPC header allocation must not leak its newly created spill file"
         );
     });
 }
