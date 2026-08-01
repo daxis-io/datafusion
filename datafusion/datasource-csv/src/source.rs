@@ -250,14 +250,17 @@ impl FileSource for CsvSource {
         &self,
         object_store: Arc<dyn ObjectStore>,
         base_config: &FileScanConfig,
-        _partition_index: usize,
+        partition_index: usize,
     ) -> Result<Arc<dyn FileOpener>> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = partition_index;
+
         let mut opener = Arc::new(CsvOpener {
             config: Arc::new(self.clone()),
             file_compression_type: base_config.file_compression_type,
             object_store,
             #[cfg(not(target_arch = "wasm32"))]
-            partition_index: _partition_index,
+            partition_index,
         }) as Arc<dyn FileOpener>;
         opener = ProjectionOpener::try_new(
             self.projection.clone(),
