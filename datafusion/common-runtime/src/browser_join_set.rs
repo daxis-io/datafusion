@@ -18,6 +18,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 use futures::channel::mpsc;
@@ -29,6 +31,7 @@ use crate::BrowserJoinError;
 #[derive(Debug, Clone)]
 pub struct AbortHandle {
     inner: FuturesAbortHandle,
+    finished: Arc<AtomicBool>,
 }
 
 impl AbortHandle {
@@ -37,9 +40,9 @@ impl AbortHandle {
         self.inner.abort();
     }
 
-    /// Returns true when cancellation has been requested.
+    /// Returns true when the associated task has completed.
     pub fn is_finished(&self) -> bool {
-        self.inner.is_aborted()
+        self.finished.load(Ordering::Acquire)
     }
 }
 
@@ -107,13 +110,19 @@ impl<T: 'static> JoinSet<T> {
         let (abort, registration) = FuturesAbortHandle::new_pair();
         self.aborts.insert(id, abort.clone());
         let sender = self.sender.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let task_finished = Arc::clone(&finished);
         wasm_bindgen_futures::spawn_local(async move {
             let result = Abortable::new(task, registration)
                 .await
                 .map_err(|_| BrowserJoinError::cancelled());
+            task_finished.store(true, Ordering::Release);
             let _ = sender.unbounded_send((id, result));
         });
-        AbortHandle { inner: abort }
+        AbortHandle {
+            inner: abort,
+            finished,
+        }
     }
 
     /// Await the next task in completion order.

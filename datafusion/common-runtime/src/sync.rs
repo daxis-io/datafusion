@@ -165,17 +165,14 @@ mod browser {
 
         /// Wait for a stored permit or a future notification.
         pub async fn notified(&self) {
-            loop {
-                if self.permit.swap(false, Ordering::AcqRel) {
-                    return;
-                }
-                let listener = self.event.listen();
-                if self.permit.swap(false, Ordering::AcqRel) {
-                    return;
-                }
-                listener.await;
+            if self.permit.swap(false, Ordering::AcqRel) {
                 return;
             }
+            let listener = self.event.listen();
+            if self.permit.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            listener.await;
         }
     }
 

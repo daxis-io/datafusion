@@ -42,11 +42,11 @@ pub mod mpsc {
     use event_listener::Event;
     use futures::Stream;
     use futures::channel::mpsc as futures_mpsc;
-    use futures::stream::FusedStream;
 
     #[derive(Debug)]
     struct ChannelState {
         receiver_alive: AtomicBool,
+        senders: AtomicUsize,
         len: AtomicUsize,
         closed: Event,
     }
@@ -55,6 +55,7 @@ pub mod mpsc {
         fn new() -> Self {
             Self {
                 receiver_alive: AtomicBool::new(true),
+                senders: AtomicUsize::new(1),
                 len: AtomicUsize::new(0),
                 closed: Event::new(),
             }
@@ -158,11 +159,18 @@ pub mod mpsc {
 
     impl<T> Clone for Sender<T> {
         fn clone(&self) -> Self {
+            self.state.senders.fetch_add(1, Ordering::Relaxed);
             Self {
                 inner: self.inner.clone(),
                 credits: Arc::clone(&self.credits),
                 state: Arc::clone(&self.state),
             }
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            self.state.senders.fetch_sub(1, Ordering::Release);
         }
     }
 
@@ -278,7 +286,8 @@ pub mod mpsc {
 
         /// Return true when the channel can no longer receive values.
         pub fn is_closed(&self) -> bool {
-            self.inner.is_terminated()
+            !self.state.receiver_alive.load(Ordering::Acquire)
+                || self.state.senders.load(Ordering::Acquire) == 0
         }
     }
 
@@ -323,10 +332,17 @@ pub mod mpsc {
 
     impl<T> Clone for UnboundedSender<T> {
         fn clone(&self) -> Self {
+            self.state.senders.fetch_add(1, Ordering::Relaxed);
             Self {
                 inner: self.inner.clone(),
                 state: Arc::clone(&self.state),
             }
+        }
+    }
+
+    impl<T> Drop for UnboundedSender<T> {
+        fn drop(&mut self) {
+            self.state.senders.fetch_sub(1, Ordering::Release);
         }
     }
 
@@ -412,7 +428,8 @@ pub mod mpsc {
 
         /// Return true when the channel can no longer receive values.
         pub fn is_closed(&self) -> bool {
-            self.inner.is_terminated()
+            !self.state.receiver_alive.load(Ordering::Acquire)
+                || self.state.senders.load(Ordering::Acquire) == 0
         }
     }
 

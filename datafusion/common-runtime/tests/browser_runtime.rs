@@ -118,6 +118,40 @@ async fn join_set_reports_completion_order_and_aborts_remaining_tasks() {
 }
 
 #[wasm_bindgen_test]
+async fn join_set_abort_handle_reports_completion_not_abort_request() {
+    let mut set = JoinSet::new();
+    let completed = set.spawn_local(async { 7_u8 });
+    assert!(
+        !completed.is_finished(),
+        "a newly spawned task must not be finished"
+    );
+    assert_eq!(set.join_next().await.unwrap().unwrap(), 7);
+    assert!(
+        completed.is_finished(),
+        "normal task completion must update every retained abort handle"
+    );
+
+    let mut set = JoinSet::<()>::new();
+    let aborted = set.spawn_local(pending());
+    yield_now().await;
+    aborted.abort();
+    assert!(
+        !aborted.is_finished(),
+        "requesting cancellation is not task completion"
+    );
+    let error = set
+        .join_next()
+        .await
+        .expect("the cancelled task must publish a completion")
+        .expect_err("the task was cancelled");
+    assert!(error.is_cancelled());
+    assert!(
+        aborted.is_finished(),
+        "observed cancellation completion must update every retained abort handle"
+    );
+}
+
+#[wasm_bindgen_test]
 async fn bounded_channel_enforces_one_global_capacity_across_clones() {
     let (sender, mut receiver) = mpsc::channel(2);
     let sender_clone = sender.clone();
@@ -164,6 +198,57 @@ async fn bounded_channel_preserves_waiter_order_and_reports_receiver_closure() {
     sender.closed().await;
     let error = sender.send(3).await.expect_err("receiver was dropped");
     assert_eq!(error.into_inner(), 3);
+}
+
+#[wasm_bindgen_test]
+async fn receivers_report_close_before_eof_and_drain_buffered_values() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    sender.try_send(1).expect("receiver is open");
+    let sender_clone = sender.clone();
+    drop(sender);
+    assert!(
+        !receiver.is_closed(),
+        "one remaining sender keeps the receiver open"
+    );
+    drop(sender_clone);
+    assert!(
+        receiver.is_closed(),
+        "dropping the last sender must close the receiver before an EOF poll"
+    );
+    assert_eq!(receiver.recv().await, Some(1));
+    assert_eq!(receiver.recv().await, None);
+
+    let (sender, mut receiver) = mpsc::channel(2);
+    sender.try_send(2).expect("receiver is open");
+    receiver.close();
+    assert!(
+        receiver.is_closed(),
+        "Receiver::close must be visible before an EOF poll"
+    );
+    assert!(sender.is_closed());
+    assert_eq!(receiver.recv().await, Some(2));
+    assert_eq!(receiver.recv().await, None);
+
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    sender.send(3).expect("receiver is open");
+    let sender_clone = sender.clone();
+    drop(sender);
+    assert!(!receiver.is_closed());
+    drop(sender_clone);
+    assert!(
+        receiver.is_closed(),
+        "dropping the last unbounded sender must close before an EOF poll"
+    );
+    assert_eq!(receiver.recv().await, Some(3));
+    assert_eq!(receiver.recv().await, None);
+
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    sender.send(4).expect("receiver is open");
+    receiver.close();
+    assert!(receiver.is_closed());
+    assert!(sender.is_closed());
+    assert_eq!(receiver.recv().await, Some(4));
+    assert_eq!(receiver.recv().await, None);
 }
 
 #[wasm_bindgen_test]
