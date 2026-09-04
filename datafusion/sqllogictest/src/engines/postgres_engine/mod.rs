@@ -73,7 +73,7 @@ impl Postgres {
     /// PG_URI="postgresql://postgres@127.0.0.1/test"
     /// ```
     ///
-    /// See https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html#url for format
+    /// See <https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html#url> for format
     pub async fn connect(relative_path: PathBuf, pb: ProgressBar) -> Result<Self> {
         let uri = std::env::var("PG_URI").unwrap_or_else(|_| PG_URI.to_string());
 
