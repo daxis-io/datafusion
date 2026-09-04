@@ -28,12 +28,14 @@ mod exact_stack_parquet;
 
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "exact-stack-parquet")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console, js_name = log)]
     fn console_log(message: &str);
 }
 
+#[cfg(feature = "exact-stack-parquet")]
 pub(crate) fn qualification_log(message: &str) {
     console_log(message);
 }
