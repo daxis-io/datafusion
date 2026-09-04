@@ -427,7 +427,7 @@ where
                 // Check if the value is already present in the set
                 let entry = self.map.find_mut(hash, |header| {
                     // compare value if hashes match
-                    if header.hash != hash {
+                    if header.hash != hash || header.len != value_len {
                         return false;
                     }
                     // Need to compare the bytes in the buffer

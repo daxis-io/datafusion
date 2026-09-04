@@ -449,13 +449,17 @@ async fn prove_delayed_read_cancellation() -> Result<()> {
         delay_turns: 64,
     };
     let tracker_in_task = Arc::clone(&tracker);
-    let task = SpawnedTask::spawn_local(async move {
+    let future = async move {
         let result = reader.get_bytes(0..8).await;
         tracker_in_task
             .late_publication
             .store(true, Ordering::SeqCst);
         result
-    });
+    };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let task = SpawnedTask::spawn_local(future);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let task = SpawnedTask::spawn(future);
     yield_now().await;
     drop(task);
     for _ in 0..4 {
