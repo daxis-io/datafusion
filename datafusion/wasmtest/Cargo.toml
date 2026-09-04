@@ -58,7 +58,10 @@ console_error_panic_hook = { version = "0.1.1", optional = true }
 datafusion = { workspace = true, default-features = false, features = ["browser", "sql"] }
 datafusion-common-runtime = { workspace = true, default-features = false, features = ["runtime-browser"] }
 datafusion-datasource = { workspace = true, default-features = false, features = ["runtime-browser"], optional = true }
-datafusion-datasource-parquet = { workspace = true, default-features = false, features = ["parquet-read", "runtime-browser"], optional = true }
+datafusion-datasource-parquet = { workspace = true, default-features = false, features = [
+    "parquet-read",
+    "runtime-browser",
+], optional = true }
 futures = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 parquet = { workspace = true, default-features = false, features = ["arrow"], optional = true }
