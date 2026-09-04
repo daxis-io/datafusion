@@ -17,8 +17,11 @@
 
 //! Execution plans that read file formats
 
+#[cfg(feature = "arrow")]
 pub mod arrow;
+#[cfg(feature = "csv")]
 pub mod csv;
+#[cfg(feature = "json")]
 pub mod json;
 
 #[cfg(feature = "parquet")]
@@ -35,9 +38,12 @@ pub use datafusion_datasource_parquet::source::ParquetSource;
 #[cfg(feature = "parquet")]
 pub use datafusion_datasource_parquet::{ParquetFileMetrics, ParquetFileReaderFactory};
 
+#[cfg(feature = "json")]
 pub use json::{JsonOpener, JsonSource};
 
+#[cfg(feature = "arrow")]
 pub use arrow::{ArrowOpener, ArrowSource};
+#[cfg(feature = "csv")]
 pub use csv::{CsvOpener, CsvSource};
 pub use datafusion_datasource::file::FileSource;
 pub use datafusion_datasource::file_groups::FileGroup;
@@ -46,6 +52,7 @@ pub use datafusion_datasource::file_scan_config::{
     FileScanConfig, FileScanConfigBuilder, wrap_partition_type_in_dict,
     wrap_partition_value_in_dict,
 };
+#[cfg(feature = "writes")]
 pub use datafusion_datasource::file_sink_config::*;
 
 pub use datafusion_datasource::file_stream::{

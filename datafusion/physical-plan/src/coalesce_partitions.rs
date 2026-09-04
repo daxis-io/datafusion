@@ -499,7 +499,7 @@ mod tests {
             // Why not `wait_finish` here: that releases the barrier which lets the input tasks
             // finish, which drops the input Arcs and hides the bug.
             while !input.is_finish_barrier_reached() {
-                tokio::task::yield_now().await;
+                datafusion_common_runtime::yield_now().await;
             }
         })
         .await

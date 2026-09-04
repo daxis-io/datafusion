@@ -36,6 +36,7 @@ pub mod file_compression_type;
 pub mod file_format;
 pub mod file_groups;
 pub mod file_scan_config;
+#[cfg(feature = "writes")]
 pub mod file_sink_config;
 pub mod file_stream;
 pub mod memory;
@@ -55,6 +56,7 @@ pub mod table_schema;
 pub mod test_util;
 
 pub mod url;
+#[cfg(feature = "writes")]
 pub mod write;
 pub use self::file::as_file_source;
 pub use self::url::ListingTableUrl;

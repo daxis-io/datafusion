@@ -31,7 +31,8 @@ use crate::spill::get_record_batch_memory_size;
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion_common::{Result, exec_err};
-use datafusion_common_runtime::JoinSet;
+use datafusion_common_runtime::channel::mpsc::{Receiver, Sender};
+use datafusion_common_runtime::{JoinSet, channel::mpsc};
 use datafusion_execution::TaskContext;
 use datafusion_execution::memory_pool::MemoryReservation;
 
@@ -40,8 +41,8 @@ use futures::stream::BoxStream;
 use futures::{Future, Stream, StreamExt};
 use log::debug;
 use pin_project_lite::pin_project;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::{Receiver, Sender};
 
 /// Creates a stream from a collection of producing tasks, routing panics to the stream.
 ///
@@ -63,7 +64,7 @@ pub(crate) struct ReceiverStreamBuilder<O> {
 impl<O: Send + 'static> ReceiverStreamBuilder<O> {
     /// Create new channels with the specified buffer size
     pub fn new(capacity: usize) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let (tx, rx) = mpsc::channel(capacity);
 
         Self {
             tx,
@@ -88,6 +89,7 @@ impl<O: Send + 'static> ReceiverStreamBuilder<O> {
     }
 
     /// Same as [`Self::spawn`] but it spawns the task on the provided runtime
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_on<F>(&mut self, task: F, handle: &Handle)
     where
         F: Future<Output = Result<()>>,
@@ -101,6 +103,7 @@ impl<O: Send + 'static> ReceiverStreamBuilder<O> {
     ///
     /// This is often used to spawn tasks that write to the sender
     /// retrieved from `Self::tx`.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_blocking<F>(&mut self, f: F)
     where
         F: FnOnce() -> Result<()>,
@@ -110,6 +113,7 @@ impl<O: Send + 'static> ReceiverStreamBuilder<O> {
     }
 
     /// Same as [`Self::spawn_blocking`] but it spawns the blocking task on the provided runtime
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_blocking_on<F>(&mut self, f: F, handle: &Handle)
     where
         F: FnOnce() -> Result<()>,
@@ -274,6 +278,7 @@ impl RecordBatchReceiverStreamBuilder {
     }
 
     /// Same as [`Self::spawn`] but it spawns the task on the provided runtime.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_on<F>(&mut self, task: F, handle: &Handle)
     where
         F: Future<Output = Result<()>>,
@@ -301,6 +306,7 @@ impl RecordBatchReceiverStreamBuilder {
     /// This is often used to spawn tasks that write to the sender
     /// retrieved from [`Self::tx`], for examples, see the document
     /// of this type.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_blocking<F>(&mut self, f: F)
     where
         F: FnOnce() -> Result<()>,
@@ -310,6 +316,7 @@ impl RecordBatchReceiverStreamBuilder {
     }
 
     /// Same as [`Self::spawn_blocking`] but it spawns the blocking task on the provided runtime.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn spawn_blocking_on<F>(&mut self, f: F, handle: &Handle)
     where
         F: FnOnce() -> Result<()>,

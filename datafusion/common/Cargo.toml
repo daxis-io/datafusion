@@ -82,7 +82,7 @@ object_store = { workspace = true, optional = true }
 parquet = { workspace = true, optional = true, default-features = true }
 recursive = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "js"] }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }

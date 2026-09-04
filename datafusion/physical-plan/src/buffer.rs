@@ -37,6 +37,8 @@ use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_common::{Result, Statistics, internal_err};
 use datafusion_common_runtime::SpawnedTask;
+use datafusion_common_runtime::channel::mpsc::{self, UnboundedReceiver};
+use datafusion_common_runtime::sync::{OwnedSemaphorePermit, Semaphore};
 use datafusion_execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr_common::metrics::{
@@ -52,8 +54,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// WARNING: EXPERIMENTAL
 ///
@@ -402,7 +402,7 @@ impl<T: Send + SizedMessage + 'static> MemoryBufferedStream<T> {
         memory_reservation: MemoryReservation,
     ) -> Self {
         let semaphore = Arc::new(Semaphore::new(capacity));
-        let (batch_tx, batch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (batch_tx, batch_rx) = mpsc::unbounded_channel();
 
         let memory_reservation = Arc::new(memory_reservation);
         let memory_reservation_clone = Arc::clone(&memory_reservation);
@@ -412,6 +412,7 @@ impl<T: Send + SizedMessage + 'static> MemoryBufferedStream<T> {
                 // By down this, we abort polling the input as soon as the consumer channel is
                 // closed. Otherwise, we would need to wait for a full new message to be available
                 // in order to consider aborting the stream
+                #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                 let item_or_err = tokio::select! {
                     biased;
                     _ = batch_tx.closed() => break,
@@ -431,6 +432,33 @@ impl<T: Send + SizedMessage + 'static> MemoryBufferedStream<T> {
                                     "BufferExec input stream panicked: {msg}"
                                 ));
                                 break;
+                            }
+                        }
+                    }
+                };
+
+                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                let item_or_err = {
+                    let closed = batch_tx.closed().fuse();
+                    let polled = AssertUnwindSafe(input.next()).catch_unwind().fuse();
+                    futures::pin_mut!(closed, polled);
+                    futures::select_biased! {
+                        _ = closed => break,
+                        polled = polled => {
+                            match polled {
+                                Ok(Some(item_or_err)) => item_or_err,
+                                Ok(None) => break,
+                                Err(panic) => {
+                                    let msg = panic
+                                        .downcast_ref::<&str>()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                                        .unwrap_or_else(|| "unknown panic".to_string());
+                                    let _ = batch_tx.send(internal_err!(
+                                        "BufferExec input stream panicked: {msg}"
+                                    ));
+                                    break;
+                                }
                             }
                         }
                     }

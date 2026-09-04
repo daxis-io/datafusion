@@ -39,15 +39,15 @@ all-features = true
 workspace = true
 
 [features]
-arrow = ["dep:datafusion-datasource-arrow"]
+arrow = ["dep:datafusion-datasource-arrow", "listing"]
 nested_expressions = ["datafusion-functions-nested"]
 # This feature is deprecated. Use the `nested_expressions` feature instead.
 array_expressions = ["nested_expressions"]
 # Used to enable the avro format
-avro = ["datafusion-datasource-avro"]
+avro = ["datafusion-datasource-avro", "listing"]
 backtrace = ["datafusion-common/backtrace"]
 browser = ["runtime-browser"]
-catalog-stream = ["dep:datafusion-catalog-listing", "datafusion-catalog/catalog-stream"]
+catalog-stream = ["listing", "datafusion-catalog/catalog-stream"]
 compression = [
     "liblzma",
     "bzip2",
@@ -56,7 +56,7 @@ compression = [
     "datafusion-datasource-arrow?/compression",
     "datafusion-datasource/compression",
 ]
-csv = ["dep:datafusion-datasource-csv"]
+csv = ["dep:datafusion-datasource-csv", "listing"]
 crypto_expressions = ["datafusion-functions/crypto_expressions"]
 datetime_expressions = ["datafusion-functions/datetime_expressions"]
 default = [
@@ -86,13 +86,15 @@ encoding_expressions = ["datafusion-functions/encoding_expressions"]
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion-physical-plan/force_hash_collisions", "datafusion-common/force_hash_collisions"]
 math_expressions = ["datafusion-functions/math_expressions"]
-json = ["dep:datafusion-datasource-json"]
+json = ["dep:datafusion-datasource-json", "listing"]
+listing = ["dep:datafusion-catalog-listing"]
 parquet = [
     "datafusion-common/parquet",
     "dep:parquet",
     "dep:datafusion-datasource-parquet",
     "datafusion-datasource-parquet/parquet-read",
     "datafusion-datasource-parquet/object-store-reader",
+    "listing",
 ]
 parquet_encryption = [
     "parquet",
@@ -154,6 +156,7 @@ temp-path = ["datafusion-datasource/temp-path", "datafusion-execution/temp-path"
 writes = [
     "datafusion-datasource/writes",
     "datafusion-datasource-parquet?/parquet-write",
+    "listing",
 ]
 extended_tests = []
 
@@ -207,6 +210,9 @@ zstd = { workspace = true, optional = true }
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }

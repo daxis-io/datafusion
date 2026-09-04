@@ -26,11 +26,15 @@ use std::sync::Arc;
 use crate::file::FileSource;
 use crate::file_compression_type::FileCompressionType;
 use crate::file_scan_config::FileScanConfig;
+#[cfg(feature = "writes")]
 use crate::file_sink_config::FileSinkConfig;
 
 use arrow::datatypes::SchemaRef;
 use datafusion_common::file_options::file_type::FileType;
-use datafusion_common::{GetExt, Result, Statistics, internal_err, not_impl_err};
+#[cfg(feature = "writes")]
+use datafusion_common::not_impl_err;
+use datafusion_common::{GetExt, Result, Statistics, internal_err};
+#[cfg(feature = "writes")]
 use datafusion_physical_expr::LexRequirement;
 use datafusion_physical_expr_common::sort_expr::LexOrdering;
 use datafusion_physical_plan::ExecutionPlan;
@@ -172,6 +176,7 @@ pub trait FileFormat: Any + Send + Sync + fmt::Debug {
 
     /// Take a list of files and the configuration to convert it to the
     /// appropriate writer executor according to this file format.
+    #[cfg(feature = "writes")]
     async fn create_writer_physical_plan(
         &self,
         _input: Arc<dyn ExecutionPlan>,

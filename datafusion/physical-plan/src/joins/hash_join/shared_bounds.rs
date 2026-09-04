@@ -48,8 +48,8 @@ use datafusion_physical_expr::{
     PhysicalExpr, PhysicalExprRef, RangePartitioning, ScalarFunctionExpr,
 };
 
+use datafusion_common_runtime::sync::Notify;
 use parking_lot::Mutex;
-use tokio::sync::Notify;
 
 /// Represents the minimum and maximum values for a specific column.
 /// Used in dynamic filter pushdown to establish value boundaries.

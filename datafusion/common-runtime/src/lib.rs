@@ -42,12 +42,52 @@ compile_error!(
     "a browser runtime is required on wasm32-unknown-unknown; enable runtime-browser"
 );
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod browser_join_set;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod browser_task;
+pub mod channel;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod common;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod join_set;
+pub mod sync;
 mod trace_utils;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use browser_join_set::{AbortHandle, JoinSet};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use browser_task::{BrowserJoinError, SpawnedTask};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use common::SpawnedTask;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use join_set::JoinSet;
 pub use trace_utils::{
     JoinSetTracer, JoinSetTracerError, set_join_set_tracer, trace_block, trace_future,
 };
+
+/// Yield execution to the selected runtime's task queue.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub async fn yield_now() {
+    tokio::task::yield_now().await;
+}
+
+/// Yield execution to the browser event loop.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn yield_now() {
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    gloo_timers::callback::Timeout::new(0, move || {
+        let _ = sender.send(());
+    })
+    .forget();
+    let _ = receiver.await;
+}
+
+/// Wake a task after yielding through the browser task queue.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn wake_after_yield(waker: std::task::Waker) {
+    wasm_bindgen_futures::spawn_local(async move {
+        yield_now().await;
+        waker.wake();
+    });
+}

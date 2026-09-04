@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion_common_runtime::sync::watch;
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fmt::Display, hash::Hash, sync::Arc};
-use tokio::sync::watch;
 
 use crate::PhysicalExpr;
 use arrow::datatypes::{DataType, Schema};
@@ -720,7 +720,7 @@ pub(crate) struct DynamicFilterChange {
 ///
 /// Obtained via [`DynamicFilterPhysicalExpr::subscribe`]. Steady-state polling
 /// via [`Self::observe`] is a single atomic load (the underlying
-/// [`tokio::sync::watch`] version counter); the lock is only taken when the
+/// runtime watch-channel version counter); the lock is only taken when the
 /// filter has actually been updated.
 #[derive(Debug)]
 pub(crate) struct DynamicFilterSubscription {

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use super::SendableRecordBatchStream;
 use crate::expressions::{CastExpr, Column};
 use crate::projection::{ProjectionExec, ProjectionExpr};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::stream::RecordBatchReceiverStream;
 use crate::{ColumnStatistics, ExecutionPlan, Statistics};
 
@@ -34,7 +35,9 @@ use datafusion_common::stats::Precision;
 use datafusion_common::{Result, plan_err};
 use datafusion_execution::memory_pool::MemoryReservation;
 
-use futures::{StreamExt, TryStreamExt};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use futures::StreamExt;
+use futures::TryStreamExt;
 
 /// [`MemoryReservation`] used across query execution streams
 pub(crate) type SharedMemoryReservation = Arc<MemoryReservation>;
@@ -184,44 +187,56 @@ pub fn project_plan_to_schema(
 /// allowing it to execute in parallel with an intermediate buffer of size `buffer`.
 /// At most `buffer` record batches will be produced ahead of the consumer.
 pub fn spawn_buffered(
-    mut input: SendableRecordBatchStream,
+    input: SendableRecordBatchStream,
     buffer: usize,
 ) -> SendableRecordBatchStream {
-    // Use tokio only if running from a multi-thread tokio context
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle)
-            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-        {
-            let mut builder = RecordBatchReceiverStream::builder(input.schema(), buffer);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let _ = buffer;
+        input
+    }
 
-            let sender = builder.tx();
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let mut input = input;
+        // Use tokio only if running from a multi-thread tokio context
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle)
+                if handle.runtime_flavor()
+                    == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                let mut builder =
+                    RecordBatchReceiverStream::builder(input.schema(), buffer);
 
-            builder.spawn(async move {
-                // We call `reserve` (which waits until there's room for at least 1 message in the
-                // channel buffer) **before** polling from input to ensure we hold a maximum of
-                // `buffer` record batches in memory.
-                // Polling from input and then calling send() would block when the channel is full
-                // so it would essentially hold `buffer` + 1 record batches:
-                // * `buffer`: this many elements would live inside the channel, since this is the
-                //   channel's capacity
-                // * 1 extra RecordBatch which was produced, but there was no room for it in the
-                //   channel, so it's being owned by the send() future, which keeps the batch in
-                //   memory while it waits for a slot to free up
-                while let Ok(permit) = sender.reserve().await {
-                    // Receiver dropped when query is shutdown early (e.g., limit) or error,
-                    // no need to return propagate the send error.
-                    match input.next().await {
-                        Some(item) => permit.send(item),
-                        None => break,
+                let sender = builder.tx();
+
+                builder.spawn(async move {
+                    // We call `reserve` (which waits until there's room for at least 1 message in the
+                    // channel buffer) **before** polling from input to ensure we hold a maximum of
+                    // `buffer` record batches in memory.
+                    // Polling from input and then calling send() would block when the channel is full
+                    // so it would essentially hold `buffer` + 1 record batches:
+                    // * `buffer`: this many elements would live inside the channel, since this is the
+                    //   channel's capacity
+                    // * 1 extra RecordBatch which was produced, but there was no room for it in the
+                    //   channel, so it's being owned by the send() future, which keeps the batch in
+                    //   memory while it waits for a slot to free up
+                    while let Ok(permit) = sender.reserve().await {
+                        // Receiver dropped when query is shutdown early (e.g., limit) or error,
+                        // no need to return propagate the send error.
+                        match input.next().await {
+                            Some(item) => permit.send(item),
+                            None => break,
+                        }
                     }
-                }
 
-                Ok(())
-            });
+                    Ok(())
+                });
 
-            builder.build()
+                builder.build()
+            }
+            _ => input,
         }
-        _ => input,
     }
 }
 

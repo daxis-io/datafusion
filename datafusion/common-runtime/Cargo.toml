@@ -52,5 +52,14 @@ log = { workspace = true }
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }
 
-[dev-dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+async-lock = "=3.4.2"
+event-listener = "=5.4.2"
+gloo-timers = { version = "=0.3.0", features = ["futures"] }
+wasm-bindgen-futures = "=0.4.68"
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "=0.3.68"

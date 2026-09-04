@@ -53,6 +53,7 @@ use arrow::error::ArrowError;
 use parquet::errors::ParquetError;
 #[cfg(feature = "sql")]
 use sqlparser::parser::ParserError;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tokio::task::JoinError;
 
 /// Result type for operations that could result in an [DataFusionError]
@@ -63,6 +64,70 @@ pub type SharedResult<T> = result::Result<T, Arc<DataFusionError>>;
 
 /// Error type for generic operations that could result in DataFusionError::External
 pub type GenericError = Box<dyn Error + Send + Sync>;
+
+/// Runtime profiles with capability-specific behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeProfile {
+    /// Single-threaded browser WebAssembly.
+    Browser,
+}
+
+impl Display for RuntimeProfile {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Browser => formatter.write_str("browser"),
+        }
+    }
+}
+
+/// Runtime capabilities that are unavailable in some profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCapability {
+    /// Host filesystem and temporary-path access.
+    Disk,
+    /// Disk-backed execution spill.
+    Spill,
+}
+
+impl Display for RuntimeCapability {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disk => formatter.write_str("Disk"),
+            Self::Spill => formatter.write_str("Spill"),
+        }
+    }
+}
+
+/// Structured error returned when a runtime profile cannot provide a capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedRuntimeCapability {
+    /// The selected runtime profile.
+    pub profile: RuntimeProfile,
+    /// The unavailable capability.
+    pub capability: RuntimeCapability,
+}
+
+impl UnsupportedRuntimeCapability {
+    /// Create a browser-profile capability error.
+    pub fn browser(capability: RuntimeCapability) -> Self {
+        Self {
+            profile: RuntimeProfile::Browser,
+            capability,
+        }
+    }
+}
+
+impl Display for UnsupportedRuntimeCapability {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "runtime profile {} does not support capability {}",
+            self.profile, self.capability
+        )
+    }
+}
+
+impl Error for UnsupportedRuntimeCapability {}
 
 /// DataFusion error
 #[derive(Debug)]
@@ -133,6 +198,7 @@ pub enum DataFusionError {
     /// [`JoinError`] during execution of the query.
     ///
     /// This error can't occur for unjoined tasks, such as execution shutdown.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     ExecutionJoin(Box<JoinError>),
     /// Error when resources (such as memory of scratch disk space) are exhausted.
     ///
@@ -454,6 +520,7 @@ impl Error for DataFusionError {
             DataFusionError::Plan(_) => None,
             DataFusionError::SchemaError(e, _) => Some(e.as_ref()),
             DataFusionError::Execution(_) => None,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DataFusionError::ExecutionJoin(e) => Some(e.as_ref()),
             DataFusionError::ResourcesExhausted(_) => None,
             DataFusionError::External(e) => Some(e.as_ref()),
@@ -587,6 +654,7 @@ impl DataFusionError {
             }
             DataFusionError::SchemaError(_, _) => "Schema error: ",
             DataFusionError::Execution(_) => "Execution error: ",
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DataFusionError::ExecutionJoin(_) => "ExecutionJoin error: ",
             DataFusionError::ResourcesExhausted(_) => {
                 "Resources exhausted: "
@@ -632,6 +700,7 @@ impl DataFusionError {
                 Cow::Owned(format!("{desc}{backtrace}"))
             }
             DataFusionError::Execution(ref desc) => Cow::Owned(desc.to_string()),
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             DataFusionError::ExecutionJoin(ref desc) => Cow::Owned(desc.to_string()),
             DataFusionError::ResourcesExhausted(ref desc) => Cow::Owned(desc.to_string()),
             DataFusionError::External(ref desc) => Cow::Owned(desc.to_string()),

@@ -83,3 +83,6 @@ tokio-util = { workspace = true, features = ["io"], optional = true }
 [dev-dependencies]
 chrono = { workspace = true }
 insta = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "=0.3.68"

@@ -2179,7 +2179,7 @@ impl RepartitionExec {
             // make progress, but parallelism is going to be limited
             // in that case anyways
             if batches_until_yield == 0 {
-                tokio::task::yield_now().await;
+                datafusion_common_runtime::yield_now().await;
                 batches_until_yield = partitioner.num_partitions();
             } else {
                 batches_until_yield -= 1;

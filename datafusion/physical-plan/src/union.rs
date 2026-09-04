@@ -63,7 +63,19 @@ use datafusion_physical_expr::{
 use futures::Stream;
 use itertools::Itertools;
 use log::{debug, trace, warn};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use tokio::macros::support::thread_rng_n;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn thread_rng_n(n: u32) -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    if n == 0 {
+        0
+    } else {
+        NEXT.fetch_add(1, Ordering::Relaxed) % n
+    }
+}
 
 /// Coerces `input`'s output schema to exactly `schema` via a `ProjectionExec`
 /// that re-stamps each column with the union's merged field (same

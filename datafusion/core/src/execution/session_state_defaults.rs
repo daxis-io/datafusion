@@ -15,16 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "listing")]
 use crate::catalog::listing_schema::ListingSchemaProvider;
 use crate::catalog::{CatalogProvider, TableProviderFactory};
 use crate::datasource::file_format::FileFormatFactory;
+#[cfg(feature = "arrow")]
 use crate::datasource::file_format::arrow::ArrowFormatFactory;
 #[cfg(feature = "avro")]
 use crate::datasource::file_format::avro::AvroFormatFactory;
+#[cfg(feature = "csv")]
 use crate::datasource::file_format::csv::CsvFormatFactory;
+#[cfg(feature = "json")]
 use crate::datasource::file_format::json::JsonFormatFactory;
 #[cfg(feature = "parquet")]
 use crate::datasource::file_format::parquet::ParquetFormatFactory;
+#[cfg(feature = "listing")]
 use crate::datasource::provider::DefaultTableFactory;
 use crate::execution::context::SessionState;
 #[cfg(feature = "nested_expressions")]
@@ -33,6 +38,7 @@ use crate::{functions, functions_aggregate, functions_table, functions_window};
 use datafusion_catalog::TableFunction;
 use datafusion_catalog::{MemoryCatalogProvider, MemorySchemaProvider};
 use datafusion_execution::config::SessionConfig;
+#[cfg(feature = "listing")]
 use datafusion_execution::object_store::ObjectStoreUrl;
 use datafusion_execution::runtime_env::RuntimeEnv;
 use datafusion_expr::planner::ExprPlanner;
@@ -40,6 +46,7 @@ use datafusion_expr::registry::ExtensionTypeRegistrationRef;
 use datafusion_expr::{AggregateUDF, HigherOrderUDF, ScalarUDF, WindowUDF};
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(feature = "listing")]
 use url::Url;
 
 /// Defaults that are used as part of creating a SessionState such as table providers,
@@ -49,14 +56,20 @@ pub struct SessionStateDefaults {}
 impl SessionStateDefaults {
     /// returns a map of the default [`TableProviderFactory`]s
     pub fn default_table_factories() -> HashMap<String, Arc<dyn TableProviderFactory>> {
+        #[cfg_attr(not(feature = "listing"), allow(unused_mut))]
         let mut table_factories: HashMap<String, Arc<dyn TableProviderFactory>> =
             HashMap::new();
         #[cfg(feature = "parquet")]
         table_factories.insert("PARQUET".into(), Arc::new(DefaultTableFactory::new()));
+        #[cfg(feature = "csv")]
         table_factories.insert("CSV".into(), Arc::new(DefaultTableFactory::new()));
+        #[cfg(feature = "json")]
         table_factories.insert("JSON".into(), Arc::new(DefaultTableFactory::new()));
+        #[cfg(feature = "json")]
         table_factories.insert("NDJSON".into(), Arc::new(DefaultTableFactory::new()));
+        #[cfg(feature = "avro")]
         table_factories.insert("AVRO".into(), Arc::new(DefaultTableFactory::new()));
+        #[cfg(feature = "arrow")]
         table_factories.insert("ARROW".into(), Arc::new(DefaultTableFactory::new()));
 
         table_factories
@@ -149,8 +162,11 @@ impl SessionStateDefaults {
         let file_formats: Vec<Arc<dyn FileFormatFactory>> = vec![
             #[cfg(feature = "parquet")]
             Arc::new(ParquetFormatFactory::new()),
+            #[cfg(feature = "json")]
             Arc::new(JsonFormatFactory::new()),
+            #[cfg(feature = "csv")]
             Arc::new(CsvFormatFactory::new()),
+            #[cfg(feature = "arrow")]
             Arc::new(ArrowFormatFactory::new()),
             #[cfg(feature = "avro")]
             Arc::new(AvroFormatFactory::new()),
@@ -193,42 +209,49 @@ impl SessionStateDefaults {
         runtime: &Arc<RuntimeEnv>,
         default_catalog: &MemoryCatalogProvider,
     ) {
-        let url = config.options().catalog.location.as_ref();
-        let format = config.options().catalog.format.as_ref();
-        let (url, format) = match (url, format) {
-            (Some(url), Some(format)) => (url, format),
-            _ => return,
-        };
-        let url = url.to_string();
-        let format = format.to_string();
+        #[cfg(not(feature = "listing"))]
+        let _ = (config, table_factories, runtime, default_catalog);
 
-        let url = Url::parse(url.as_str()).expect("Invalid default catalog location!");
-        let authority = match url.host_str() {
-            Some(host) => format!("{}://{}", url.scheme(), host),
-            None => format!("{}://", url.scheme()),
-        };
-        let path = &url.as_str()[authority.len()..];
-        let path = object_store::path::Path::parse(path).expect("Can't parse path");
-        let store = ObjectStoreUrl::parse(authority.as_str())
-            .expect("Invalid default catalog url");
-        let store = match runtime.object_store(store) {
-            Ok(store) => store,
-            _ => return,
-        };
-        let factory = match table_factories.get(format.as_str()) {
-            Some(factory) => factory,
-            _ => return,
-        };
-        let schema = ListingSchemaProvider::new(
-            authority,
-            path,
-            Arc::clone(factory),
-            store,
-            format,
-        );
-        let _ = default_catalog
-            .register_schema("default", Arc::new(schema))
-            .expect("Failed to register default schema");
+        #[cfg(feature = "listing")]
+        {
+            let url = config.options().catalog.location.as_ref();
+            let format = config.options().catalog.format.as_ref();
+            let (url, format) = match (url, format) {
+                (Some(url), Some(format)) => (url, format),
+                _ => return,
+            };
+            let url = url.to_string();
+            let format = format.to_string();
+
+            let url =
+                Url::parse(url.as_str()).expect("Invalid default catalog location!");
+            let authority = match url.host_str() {
+                Some(host) => format!("{}://{}", url.scheme(), host),
+                None => format!("{}://", url.scheme()),
+            };
+            let path = &url.as_str()[authority.len()..];
+            let path = object_store::path::Path::parse(path).expect("Can't parse path");
+            let store = ObjectStoreUrl::parse(authority.as_str())
+                .expect("Invalid default catalog url");
+            let store = match runtime.object_store(store) {
+                Ok(store) => store,
+                _ => return,
+            };
+            let factory = match table_factories.get(format.as_str()) {
+                Some(factory) => factory,
+                _ => return,
+            };
+            let schema = ListingSchemaProvider::new(
+                authority,
+                path,
+                Arc::clone(factory),
+                store,
+                format,
+            );
+            let _ = default_catalog
+                .register_schema("default", Arc::new(schema))
+                .expect("Failed to register default schema");
+        }
     }
 
     /// registers the default [`FileFormatFactory`]s

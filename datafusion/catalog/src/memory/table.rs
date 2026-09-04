@@ -51,9 +51,9 @@ use datafusion_physical_plan::{
 use datafusion_session::Session;
 
 use async_trait::async_trait;
+use datafusion_common_runtime::sync::RwLock;
 use log::debug;
 use parking_lot::Mutex;
-use tokio::sync::RwLock;
 
 // backward compatibility
 pub use datafusion_datasource::memory::PartitionData;

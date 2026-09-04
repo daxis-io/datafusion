@@ -22,23 +22,28 @@ use std::fmt::Debug;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+#[cfg(feature = "listing")]
 use super::options::ReadOptions;
+#[cfg(feature = "listing")]
+use crate::catalog::listing_schema::ListingSchemaProvider;
+#[cfg(feature = "listing")]
 use crate::datasource::dynamic_file::DynamicListTableFactory;
+#[cfg(feature = "listing")]
+use crate::datasource::listing::{
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+};
+#[cfg(feature = "arrow")]
+use crate::execution::options::ArrowReadOptions;
 use crate::execution::session_state::SessionStateBuilder;
 use crate::{
-    catalog::listing_schema::ListingSchemaProvider,
     catalog::{
         CatalogProvider, CatalogProviderList, TableProvider, TableProviderFactory,
     },
     dataframe::DataFrame,
-    datasource::listing::{
-        ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
-    },
     datasource::{MemTable, ViewTable, provider_as_source},
     error::Result,
     execution::{
         FunctionRegistry,
-        options::ArrowReadOptions,
         runtime_env::{RuntimeEnv, RuntimeEnvBuilder},
     },
     logical_expr::AggregateUDF,
@@ -50,28 +55,32 @@ use crate::{
         SetVariable, TableType, UNNAMED_TABLE,
     },
     physical_expr::PhysicalExpr,
-    physical_plan::ExecutionPlan,
     variable::{VarProvider, VarType},
 };
 
 // backwards compatibility
 pub use crate::execution::session_state::SessionState;
 
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::Schema;
+#[cfg(feature = "listing")]
+use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
+#[cfg(feature = "listing")]
+use datafusion_catalog::DynamicFileCatalog;
 use datafusion_catalog::MemoryCatalogProvider;
+#[cfg(feature = "listing")]
+use datafusion_catalog::UrlTableFactory;
 use datafusion_catalog::memory::MemorySchemaProvider;
-use datafusion_catalog::{
-    DynamicFileCatalog, TableFunction, TableFunctionImpl, UrlTableFactory,
-};
+use datafusion_catalog::{TableFunction, TableFunctionImpl};
+#[cfg(feature = "listing")]
 use datafusion_catalog_listing::SchemaSource;
 use datafusion_common::config::{ConfigField, ConfigOptions};
 use datafusion_common::metadata::ScalarAndMetadata;
 use datafusion_common::{
     DFSchema, DataFusionError, ParamValues, SchemaError, SchemaReference, TableReference,
     config::{ConfigExtension, TableOptions},
-    exec_datafusion_err, exec_err, internal_datafusion_err, not_impl_err,
-    plan_datafusion_err, plan_err, schema_err,
+    exec_datafusion_err, exec_err, not_impl_err, plan_datafusion_err, plan_err,
+    schema_err,
     tree_node::{TreeNodeRecursion, TreeNodeVisitor},
 };
 pub use datafusion_execution::TaskContext;
@@ -99,7 +108,20 @@ use datafusion_optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion_optimizer::simplify_expressions::ExprSimplifier;
 use datafusion_optimizer::{Analyzer, OptimizerContext};
 use datafusion_optimizer::{AnalyzerRule, OptimizerRule};
+#[cfg(feature = "listing")]
 use datafusion_session::SessionStore;
+
+#[cfg(any(
+    test,
+    doc,
+    feature = "csv",
+    feature = "json",
+    feature = "parquet",
+    feature = "avro"
+))]
+use crate::physical_plan::ExecutionPlan;
+#[cfg(feature = "listing")]
+use datafusion_common::internal_datafusion_err;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -107,7 +129,9 @@ use object_store::ObjectStore;
 use parking_lot::RwLock;
 use url::Url;
 
+#[cfg(feature = "csv")]
 mod csv;
+#[cfg(feature = "json")]
 mod json;
 #[cfg(feature = "parquet")]
 mod parquet;
@@ -118,29 +142,34 @@ mod avro;
 /// DataFilePaths adds a method to convert strings and vector of strings to vector of [`ListingTableUrl`] URLs.
 /// This allows methods such [`SessionContext::read_csv`] and [`SessionContext::read_avro`]
 /// to take either a single file or multiple files.
+#[cfg(feature = "listing")]
 pub trait DataFilePaths {
     /// Parse to a vector of [`ListingTableUrl`] URLs.
     fn to_urls(self) -> Result<Vec<ListingTableUrl>>;
 }
 
+#[cfg(feature = "listing")]
 impl DataFilePaths for &str {
     fn to_urls(self) -> Result<Vec<ListingTableUrl>> {
         Ok(vec![ListingTableUrl::parse(self)?])
     }
 }
 
+#[cfg(feature = "listing")]
 impl DataFilePaths for String {
     fn to_urls(self) -> Result<Vec<ListingTableUrl>> {
         Ok(vec![ListingTableUrl::parse(self)?])
     }
 }
 
+#[cfg(feature = "listing")]
 impl DataFilePaths for &String {
     fn to_urls(self) -> Result<Vec<ListingTableUrl>> {
         Ok(vec![ListingTableUrl::parse(self)?])
     }
 }
 
+#[cfg(feature = "listing")]
 impl<P> DataFilePaths for Vec<P>
 where
     P: AsRef<str>,
@@ -312,6 +341,7 @@ impl SessionContext {
     }
 
     /// Finds any [`ListingSchemaProvider`]s and instructs them to reload tables from "disk"
+    #[cfg(feature = "listing")]
     pub async fn refresh_catalogs(&self) -> Result<()> {
         let cat_names = self.catalog_names().clone();
         for cat_name in cat_names.iter() {
@@ -411,6 +441,7 @@ impl SessionContext {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(feature = "listing")]
     pub fn enable_url_table(self) -> Self {
         let current_catalog_list = Arc::clone(self.state.read().catalog_list());
         let factory = Arc::new(DynamicListTableFactory::new(SessionStore::new()));
@@ -1716,6 +1747,7 @@ impl SessionContext {
     ///
     /// For more control such as reading multiple files, you can use
     /// [`read_table`](Self::read_table) with a [`ListingTable`].
+    #[cfg(feature = "listing")]
     async fn _read_type<'a, P: DataFilePaths>(
         &self,
         table_paths: P,
@@ -1769,6 +1801,7 @@ impl SessionContext {
     /// [`read_table`](Self::read_table) with a [`ListingTable`].
     ///
     /// For an example, see [`read_csv`](Self::read_csv)
+    #[cfg(feature = "arrow")]
     pub async fn read_arrow<P: DataFilePaths>(
         &self,
         table_paths: P,
@@ -1838,6 +1871,7 @@ impl SessionContext {
     /// This method is `async` because it might need to resolve the schema.
     ///
     /// [`ObjectStore`]: object_store::ObjectStore
+    #[cfg(feature = "listing")]
     pub async fn register_listing_table(
         &self,
         table_ref: impl Into<TableReference>,
@@ -1863,6 +1897,7 @@ impl SessionContext {
         Ok(())
     }
 
+    #[cfg(feature = "listing")]
     fn register_type_check<P: DataFilePaths>(
         &self,
         table_paths: P,
@@ -1888,6 +1923,7 @@ impl SessionContext {
 
     /// Registers an Arrow file as a table that can be referenced from
     /// SQL statements executed against this context.
+    #[cfg(feature = "arrow")]
     pub async fn register_arrow(
         &self,
         table_ref: impl Into<TableReference>,

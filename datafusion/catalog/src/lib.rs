@@ -41,6 +41,7 @@ pub mod empty;
 pub mod information_schema;
 pub mod listing_schema;
 pub mod memory;
+#[cfg(feature = "catalog-stream")]
 pub mod stream;
 pub mod streaming;
 pub mod view;

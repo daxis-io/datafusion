@@ -47,11 +47,11 @@ use datafusion_physical_plan::{
 };
 
 use async_trait::async_trait;
+use datafusion_common_runtime::sync::RwLock;
 use datafusion_physical_plan::coop::cooperative;
 use datafusion_physical_plan::execution_plan::SchedulingType;
 use futures::StreamExt;
 use itertools::Itertools;
-use tokio::sync::RwLock;
 
 /// Data source configuration for reading in-memory batches of data
 #[derive(Clone, Debug)]

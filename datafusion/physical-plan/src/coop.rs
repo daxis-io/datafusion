@@ -73,7 +73,10 @@
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::TreeNodeRecursion;
 use datafusion_physical_expr::PhysicalExpr;
-#[cfg(datafusion_coop = "tokio_fallback")]
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    datafusion_coop = "tokio_fallback"
+))]
 use futures::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -111,11 +114,17 @@ where
     T: RecordBatchStream + Unpin,
 {
     inner: T,
-    #[cfg(datafusion_coop = "per_stream")]
+    #[cfg(any(
+        datafusion_coop = "per_stream",
+        all(target_arch = "wasm32", target_os = "unknown")
+    ))]
     budget: u8,
 }
 
-#[cfg(datafusion_coop = "per_stream")]
+#[cfg(any(
+    datafusion_coop = "per_stream",
+    all(target_arch = "wasm32", target_os = "unknown")
+))]
 // Magic value that matches Tokio's task budget value
 const YIELD_FREQUENCY: u8 = 128;
 
@@ -129,7 +138,10 @@ where
     pub fn new(inner: T) -> Self {
         Self {
             inner,
-            #[cfg(datafusion_coop = "per_stream")]
+            #[cfg(any(
+                datafusion_coop = "per_stream",
+                all(target_arch = "wasm32", target_os = "unknown")
+            ))]
             budget: YIELD_FREQUENCY,
         }
     }
@@ -145,12 +157,15 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        #[cfg(any(
-            datafusion_coop = "tokio",
-            not(any(
-                datafusion_coop = "tokio_fallback",
-                datafusion_coop = "per_stream"
-            ))
+        #[cfg(all(
+            not(all(target_arch = "wasm32", target_os = "unknown")),
+            any(
+                datafusion_coop = "tokio",
+                not(any(
+                    datafusion_coop = "tokio_fallback",
+                    datafusion_coop = "per_stream"
+                ))
+            )
         ))]
         {
             let coop = std::task::ready!(tokio::task::coop::poll_proceed(cx));
@@ -161,7 +176,10 @@ where
             value
         }
 
-        #[cfg(datafusion_coop = "tokio_fallback")]
+        #[cfg(all(
+            not(all(target_arch = "wasm32", target_os = "unknown")),
+            datafusion_coop = "tokio_fallback"
+        ))]
         {
             // This is a temporary placeholder implementation that may have slightly
             // worse performance compared to `poll_proceed`
@@ -184,7 +202,10 @@ where
             value
         }
 
-        #[cfg(datafusion_coop = "per_stream")]
+        #[cfg(all(
+            not(all(target_arch = "wasm32", target_os = "unknown")),
+            datafusion_coop = "per_stream"
+        ))]
         {
             if self.budget == 0 {
                 self.budget = YIELD_FREQUENCY;
@@ -194,6 +215,23 @@ where
 
             let value = { self.inner.poll_next_unpin(cx) };
 
+            if value.is_ready() {
+                self.budget -= 1;
+            } else {
+                self.budget = YIELD_FREQUENCY;
+            }
+            value
+        }
+
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            if self.budget == 0 {
+                self.budget = YIELD_FREQUENCY;
+                datafusion_common_runtime::wake_after_yield(cx.waker().clone());
+                return Poll::Pending;
+            }
+
+            let value = self.inner.poll_next_unpin(cx);
             if value.is_ready() {
                 self.budget -= 1;
             } else {

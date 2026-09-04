@@ -21,8 +21,11 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[cfg(feature = "writes")]
 use crate::datasource::file_format::file_type_to_format;
+#[cfg(feature = "writes")]
 use crate::datasource::listing::ListingTableUrl;
+#[cfg(feature = "writes")]
 use crate::datasource::physical_plan::{FileOutputMode, FileSinkConfig};
 use crate::datasource::{DefaultTableSource, source_as_provider};
 use crate::error::{DataFusionError, Result};
@@ -75,8 +78,10 @@ use datafusion_common::{
 use datafusion_common::{
     TableReference, assert_eq_or_internal_err, assert_or_internal_err,
 };
+#[cfg(feature = "writes")]
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::memory::MemorySourceConfig;
+#[cfg(feature = "writes")]
 use datafusion_expr::dml::{CopyTo, InsertOp};
 use datafusion_expr::expr::{
     Alias, GroupingSet, NullTreatment, WindowFunction, WindowFunctionParams,
@@ -111,12 +116,12 @@ use datafusion_physical_plan::unnest::ListUnnest;
 use datafusion_session::{PhysicalOptimizerContext, PhysicalOptimizerRule, Session};
 
 use async_trait::async_trait;
+use datafusion_common_runtime::sync::Mutex;
 use datafusion_physical_plan::async_func::{AsyncFuncExec, AsyncMapper};
 use futures::{StreamExt, TryStreamExt};
 use indexmap::IndexSet;
 use itertools::{Itertools, multiunzip};
 use log::debug;
-use tokio::sync::Mutex;
 
 // Re-export from this module for backwards compatibility.
 pub use datafusion_session::{ExtensionPlanner, PhysicalPlanner};
@@ -168,6 +173,8 @@ impl PhysicalPlanner for DefaultPhysicalPlanner {
             .create_initial_plan(logical_plan, session_state)
             .await?;
 
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        datafusion_common_runtime::yield_now().await;
         self.optimize_physical_plan(plan, session_state, |_, _| {})
     }
 
@@ -646,6 +653,7 @@ impl DefaultPhysicalPlanner {
             }
 
             // 1 Child
+            #[cfg(feature = "writes")]
             LogicalPlan::Copy(CopyTo {
                 input,
                 output_url,
@@ -746,6 +754,12 @@ impl DefaultPhysicalPlanner {
                         ordering.map(Into::into),
                     )
                     .await?
+            }
+            #[cfg(not(feature = "writes"))]
+            LogicalPlan::Copy(_) => {
+                return not_impl_err!(
+                    "COPY planning requires the DataFusion 'writes' feature"
+                );
             }
             LogicalPlan::Dml(DmlStatement {
                 target,

@@ -28,9 +28,14 @@
 pub use crate::dataframe;
 pub use crate::dataframe::DataFrame;
 pub use crate::execution::context::{SQLOptions, SessionConfig, SessionContext};
-pub use crate::execution::options::{
-    AvroReadOptions, CsvReadOptions, JsonReadOptions, ParquetReadOptions,
-};
+#[cfg(feature = "avro")]
+pub use crate::execution::options::AvroReadOptions;
+#[cfg(feature = "csv")]
+pub use crate::execution::options::CsvReadOptions;
+#[cfg(feature = "json")]
+pub use crate::execution::options::JsonReadOptions;
+#[cfg(feature = "parquet")]
+pub use crate::execution::options::ParquetReadOptions;
 
 pub use datafusion_common::Column;
 pub use datafusion_expr::{

@@ -18,8 +18,11 @@
 //! Module containing helper methods for the various file formats
 //! See write.rs for write related helper methods
 
+#[cfg(feature = "arrow")]
 pub mod arrow;
+#[cfg(feature = "csv")]
 pub mod csv;
+#[cfg(feature = "json")]
 pub mod json;
 
 #[cfg(feature = "avro")]
@@ -28,10 +31,12 @@ pub mod avro;
 #[cfg(feature = "parquet")]
 pub mod parquet;
 
+#[cfg(feature = "listing")]
 pub mod options;
 
 pub use datafusion_datasource::file_compression_type;
 pub use datafusion_datasource::file_format::*;
+#[cfg(feature = "writes")]
 pub use datafusion_datasource::write;
 
 #[cfg(test)]

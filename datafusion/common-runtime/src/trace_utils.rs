@@ -21,7 +21,7 @@ use std::any::Any;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::future::Future;
-use tokio::sync::OnceCell;
+use std::sync::OnceLock;
 
 /// A trait for injecting instrumentation into either asynchronous futures or
 /// blocking closures at runtime.
@@ -89,7 +89,7 @@ impl Error for JoinSetTracerError {}
 /// Global storage for an injected tracer. If no tracer is injected, a no-op
 /// tracer is used instead. This ensures that calls to [`trace_future`] or
 /// [`trace_block`] never panic due to missing instrumentation.
-static GLOBAL_TRACER: OnceCell<&'static dyn JoinSetTracer> = OnceCell::const_new();
+static GLOBAL_TRACER: OnceLock<&'static dyn JoinSetTracer> = OnceLock::new();
 
 /// A no-op tracer singleton that is returned by [`get_tracer`] if no custom
 /// tracer has been registered.

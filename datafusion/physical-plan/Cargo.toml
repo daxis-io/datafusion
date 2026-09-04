@@ -103,7 +103,10 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }
 
-[dev-dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 arrow-data = { workspace = true }
 criterion = { workspace = true, features = ["async_futures"] }
 datafusion-functions-aggregate = { workspace = true }
@@ -117,6 +120,9 @@ tokio = { workspace = true, features = [
     "fs",
     "parking_lot",
 ] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "=0.3.68"
 
 [[bench]]
 harness = false

@@ -45,7 +45,9 @@ use futures::TryStreamExt;
 use futures::stream::BoxStream;
 #[cfg(feature = "compression")]
 use liblzma::read::XzDecoder;
+#[cfg(feature = "writes")]
 use object_store::buffered::BufWriter;
+#[cfg(feature = "writes")]
 use tokio::io::AsyncWrite;
 #[cfg(feature = "compression")]
 use tokio_util::io::{ReaderStream, StreamReader};
@@ -156,6 +158,7 @@ impl FileCompressionType {
 
     /// Wrap the given `BufWriter` so that it performs compressed writes
     /// according to this `FileCompressionType` using the default compression level.
+    #[cfg(feature = "writes")]
     pub fn convert_async_writer(
         &self,
         w: BufWriter,
@@ -168,6 +171,7 @@ impl FileCompressionType {
     ///
     /// If `compression_level` is `Some`, the encoder will use the specified
     /// compression level. If `None`, the default level for each algorithm is used.
+    #[cfg(feature = "writes")]
     pub fn convert_async_writer_with_level(
         &self,
         w: BufWriter,

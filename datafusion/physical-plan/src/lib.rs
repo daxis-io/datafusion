@@ -112,4 +112,5 @@ pub mod udaf {
     pub use datafusion_physical_expr::aggregate::AggregateFunctionExpr;
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod test;

@@ -611,6 +611,8 @@ impl SessionState {
     ) -> datafusion_common::Result<LogicalPlan> {
         let dialect = self.config.options().sql_parser.dialect;
         let statement = self.sql_to_statement(sql, &dialect)?;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        datafusion_common_runtime::yield_now().await;
         let plan = self.statement_to_plan(statement).await?;
         Ok(plan)
     }
@@ -778,7 +780,11 @@ impl SessionState {
         &self,
         logical_plan: &LogicalPlan,
     ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        datafusion_common_runtime::yield_now().await;
         let logical_plan = self.optimize(logical_plan)?;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        datafusion_common_runtime::yield_now().await;
         self.query_planner
             .create_physical_plan(&logical_plan, self)
             .await

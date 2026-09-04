@@ -19,12 +19,16 @@
 //!
 //! [`ListingTable`]: crate::datasource::listing::ListingTable
 
+#[cfg(feature = "listing")]
 pub mod dynamic_file;
 pub mod file_format;
+#[cfg(feature = "listing")]
 pub mod listing;
+#[cfg(feature = "listing")]
 pub mod listing_table_factory;
 mod memory_test;
 pub mod physical_plan;
+#[cfg(feature = "listing")]
 pub mod provider;
 mod view_test;
 
@@ -40,6 +44,7 @@ pub use datafusion_catalog::cte_worktable;
 pub use datafusion_catalog::default_table_source;
 pub use datafusion_catalog::empty;
 pub use datafusion_catalog::memory;
+#[cfg(feature = "catalog-stream")]
 pub use datafusion_catalog::stream;
 pub use datafusion_catalog::view;
 pub use datafusion_datasource::projection;
