@@ -36,6 +36,16 @@ feature_graph=$(
     --no-default-features --features "$features" --prefix none \
     --edges normal,build,features
 )
+parquet_graph=$(
+  "$cargo_bin" tree --package datafusion-datasource-parquet --target "$target" --locked \
+    --no-default-features --features parquet-read,runtime-browser --prefix none \
+    --edges normal,build
+)
+parquet_feature_graph=$(
+  "$cargo_bin" tree --package datafusion-datasource-parquet --target "$target" --locked \
+    --no-default-features --features parquet-read,runtime-browser --prefix none \
+    --edges normal,build,features
+)
 denied_packages=(
   aws-lc-sys
   bindgen
@@ -68,6 +78,10 @@ for package in "${denied_packages[@]}"; do
     printf 'denied package in browser graph: %s\n' "$package" >&2
     violations=$((violations + 1))
   fi
+  if rg -q "^${package} v" <<<"$parquet_graph"; then
+    printf 'denied package in minimal Parquet browser graph: %s\n' "$package" >&2
+    violations=$((violations + 1))
+  fi
 done
 
 denied_features=(
@@ -83,7 +97,16 @@ for feature in "${denied_features[@]}"; do
     printf 'denied feature in browser graph: %s\n' "$feature" >&2
     violations=$((violations + 1))
   fi
+  if rg -Fq "$feature" <<<"$parquet_feature_graph"; then
+    printf 'denied feature in minimal Parquet browser graph: %s\n' "$feature" >&2
+    violations=$((violations + 1))
+  fi
 done
+
+if ! rg -q '^parquet v59\.3\.0( |$)' <<<"$parquet_graph"; then
+  printf 'missing required minimal browser package: parquet v59.3.0\n' >&2
+  violations=$((violations + 1))
+fi
 
 for package in arrow arrow-array arrow-buffer arrow-data arrow-ipc arrow-ord \
   arrow-schema arrow-select parquet object_store; do

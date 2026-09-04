@@ -261,7 +261,11 @@ async fn prove_bounded_channel() -> Result<()> {
     let full = sender
         .try_send(3)
         .expect_err("third send must exceed global capacity");
-    if !full.is_full() || full.into_inner() != 3 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let is_full = full.is_full();
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let is_full = matches!(full, mpsc::error::TrySendError::Full(_));
+    if !is_full || full.into_inner() != 3 {
         return Err(DataFusionError::Execution(
             "bounded channel did not preserve the full-send value".into(),
         ));
@@ -298,11 +302,15 @@ async fn prove_drop_cancellation() -> Result<()> {
     let published = Arc::new(AtomicBool::new(false));
     let dropped_in_task = Arc::clone(&dropped);
     let published_in_task = Arc::clone(&published);
-    let task = SpawnedTask::spawn_local(async move {
+    let future = async move {
         let _probe = DropProbe(dropped_in_task);
         futures::future::pending::<()>().await;
         published_in_task.store(true, Ordering::SeqCst);
-    });
+    };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let task = SpawnedTask::spawn_local(future);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let task = SpawnedTask::spawn(future);
     yield_now().await;
     drop(task);
     yield_now().await;

@@ -78,6 +78,7 @@ path = "src/mod.rs"
 
 [features]
 default = [
+    "compression",
     "disk",
     "object-store-reader",
     "parquet-read",
@@ -85,6 +86,13 @@ default = [
     "runtime-tokio",
     "spill",
     "temp-path",
+]
+compression = [
+    "parquet/brotli",
+    "parquet/flate2-zlib-rs",
+    "parquet/lz4",
+    "parquet/snap",
+    "parquet/zstd",
 ]
 disk = ["datafusion-execution/disk"]
 object-store-reader = ["parquet/async"]

@@ -55,6 +55,7 @@ compression = [
     "zstd",
     "datafusion-datasource-arrow?/compression",
     "datafusion-datasource/compression",
+    "datafusion-datasource-parquet?/compression",
 ]
 csv = ["dep:datafusion-datasource-csv", "listing"]
 crypto_expressions = ["datafusion-functions/crypto_expressions"]
