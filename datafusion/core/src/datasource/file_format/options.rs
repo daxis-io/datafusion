@@ -25,23 +25,37 @@ use crate::datasource::file_format::avro::AvroFormat;
 #[cfg(feature = "parquet")]
 use crate::datasource::file_format::parquet::ParquetFormat;
 
+#[cfg(any(feature = "csv", feature = "json"))]
 use crate::datasource::file_format::DEFAULT_SCHEMA_INFER_MAX_RECORD;
+#[cfg(feature = "arrow")]
 use crate::datasource::file_format::arrow::ArrowFormat;
+#[cfg(feature = "csv")]
+use crate::datasource::file_format::csv::CsvFormat;
+#[cfg(any(feature = "csv", feature = "json"))]
 use crate::datasource::file_format::file_compression_type::FileCompressionType;
+use crate::datasource::listing::ListingOptions;
 use crate::datasource::listing::ListingTableUrl;
-use crate::datasource::{file_format::csv::CsvFormat, listing::ListingOptions};
 use crate::error::Result;
 use crate::execution::context::{SessionConfig, SessionState};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion_catalog_listing::SchemaSource;
-use datafusion_common::config::{ConfigFileDecryptionProperties, TableOptions};
-use datafusion_common::{
-    DEFAULT_ARROW_EXTENSION, DEFAULT_AVRO_EXTENSION, DEFAULT_CSV_EXTENSION,
-    DEFAULT_JSON_EXTENSION, DEFAULT_PARQUET_EXTENSION,
-};
+#[cfg(feature = "arrow")]
+use datafusion_common::DEFAULT_ARROW_EXTENSION;
+#[cfg(feature = "avro")]
+use datafusion_common::DEFAULT_AVRO_EXTENSION;
+#[cfg(feature = "csv")]
+use datafusion_common::DEFAULT_CSV_EXTENSION;
+#[cfg(feature = "json")]
+use datafusion_common::DEFAULT_JSON_EXTENSION;
+#[cfg(feature = "parquet")]
+use datafusion_common::DEFAULT_PARQUET_EXTENSION;
+#[cfg(feature = "parquet")]
+use datafusion_common::config::ConfigFileDecryptionProperties;
+use datafusion_common::config::TableOptions;
 
 use async_trait::async_trait;
+#[cfg(feature = "json")]
 use datafusion_datasource_json::file_format::JsonFormat;
 use datafusion_expr::SortExpr;
 
@@ -51,6 +65,7 @@ use datafusion_expr::SortExpr;
 /// can not not vary from statement to statement. For settings that
 /// can vary statement to statement see
 /// [`ConfigOptions`](crate::config::ConfigOptions).
+#[cfg(feature = "csv")]
 #[derive(Clone)]
 pub struct CsvReadOptions<'a> {
     /// Does the CSV file have a header?
@@ -99,12 +114,14 @@ pub struct CsvReadOptions<'a> {
     pub truncated_rows: bool,
 }
 
+#[cfg(feature = "csv")]
 impl Default for CsvReadOptions<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "csv")]
 impl<'a> CsvReadOptions<'a> {
     /// Create a CSV read option with default presets
     pub fn new() -> Self {
@@ -247,6 +264,7 @@ impl<'a> CsvReadOptions<'a> {
 /// can not not vary from statement to statement. For settings that
 /// can vary statement to statement see
 /// [`ConfigOptions`](crate::config::ConfigOptions).
+#[cfg(feature = "parquet")]
 #[derive(Clone)]
 pub struct ParquetReadOptions<'a> {
     /// File extension; only files with this extension are selected for data input.
@@ -274,6 +292,7 @@ pub struct ParquetReadOptions<'a> {
     pub metadata_size_hint: Option<usize>,
 }
 
+#[cfg(feature = "parquet")]
 impl Default for ParquetReadOptions<'_> {
     fn default() -> Self {
         Self {
@@ -289,6 +308,7 @@ impl Default for ParquetReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "parquet")]
 impl<'a> ParquetReadOptions<'a> {
     /// Create a new ParquetReadOptions with default values
     pub fn new() -> Self {
@@ -358,6 +378,7 @@ impl<'a> ParquetReadOptions<'a> {
 /// can not not vary from statement to statement. For settings that
 /// can vary statement to statement see
 /// [`ConfigOptions`](crate::config::ConfigOptions).
+#[cfg(feature = "arrow")]
 #[derive(Clone)]
 pub struct ArrowReadOptions<'a> {
     /// The data source schema.
@@ -371,6 +392,7 @@ pub struct ArrowReadOptions<'a> {
     pub table_partition_cols: Vec<(String, DataType)>,
 }
 
+#[cfg(feature = "arrow")]
 impl Default for ArrowReadOptions<'_> {
     fn default() -> Self {
         Self {
@@ -381,6 +403,7 @@ impl Default for ArrowReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "arrow")]
 impl<'a> ArrowReadOptions<'a> {
     /// Specify table_partition_cols for partition pruning
     pub fn table_partition_cols(
@@ -404,6 +427,7 @@ impl<'a> ArrowReadOptions<'a> {
 /// can not not vary from statement to statement. For settings that
 /// can vary statement to statement see
 /// [`ConfigOptions`](crate::config::ConfigOptions).
+#[cfg(feature = "avro")]
 #[derive(Clone)]
 pub struct AvroReadOptions<'a> {
     /// The data source schema.
@@ -416,6 +440,7 @@ pub struct AvroReadOptions<'a> {
     pub table_partition_cols: Vec<(String, DataType)>,
 }
 
+#[cfg(feature = "avro")]
 impl Default for AvroReadOptions<'_> {
     fn default() -> Self {
         Self {
@@ -426,6 +451,7 @@ impl Default for AvroReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "avro")]
 impl<'a> AvroReadOptions<'a> {
     /// Specify table_partition_cols for partition pruning
     pub fn table_partition_cols(
@@ -443,6 +469,7 @@ impl<'a> AvroReadOptions<'a> {
     }
 }
 
+#[cfg(feature = "json")]
 #[deprecated(
     since = "53.0.0",
     note = "Use `JsonReadOptions` instead. This alias will be removed in a future version."
@@ -458,6 +485,7 @@ pub type NdJsonReadOptions<'a> = JsonReadOptions<'a>;
 /// can not vary from statement to statement. For settings that
 /// can vary statement to statement see
 /// [`ConfigOptions`](crate::config::ConfigOptions).
+#[cfg(feature = "json")]
 #[derive(Clone)]
 pub struct JsonReadOptions<'a> {
     /// The data source schema.
@@ -493,6 +521,7 @@ pub struct JsonReadOptions<'a> {
     pub newline_delimited: bool,
 }
 
+#[cfg(feature = "json")]
 impl Default for JsonReadOptions<'_> {
     fn default() -> Self {
         Self {
@@ -508,6 +537,7 @@ impl Default for JsonReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "json")]
 impl<'a> JsonReadOptions<'a> {
     /// Specify table_partition_cols for partition pruning
     pub fn table_partition_cols(
@@ -622,6 +652,7 @@ pub trait ReadOptions<'a> {
     }
 }
 
+#[cfg(feature = "csv")]
 #[async_trait]
 impl ReadOptions<'_> for CsvReadOptions<'_> {
     fn to_listing_options(
@@ -711,6 +742,7 @@ impl ReadOptions<'_> for ParquetReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "json")]
 #[async_trait]
 impl ReadOptions<'_> for JsonReadOptions<'_> {
     fn to_listing_options(
@@ -775,6 +807,7 @@ impl ReadOptions<'_> for AvroReadOptions<'_> {
     }
 }
 
+#[cfg(feature = "arrow")]
 #[async_trait]
 impl ReadOptions<'_> for ArrowReadOptions<'_> {
     fn to_listing_options(

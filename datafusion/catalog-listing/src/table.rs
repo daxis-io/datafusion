@@ -33,6 +33,7 @@ use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::{
     FileScanConfig, FileScanConfigBuilder, output_partitioning_from_partition_fields,
 };
+#[cfg(feature = "writes")]
 use datafusion_datasource::file_sink_config::{FileOutputMode, FileSinkConfig};
 #[expect(deprecated)]
 use datafusion_datasource::schema_adapter::SchemaAdapterFactory;
@@ -42,6 +43,7 @@ use datafusion_datasource::{
 use datafusion_execution::cache::cache_manager::{
     CachedFileMetadata, FileStatisticsCache, SchemaFingerprint, TableScopedPath,
 };
+#[cfg(feature = "writes")]
 use datafusion_expr::dml::InsertOp;
 use datafusion_expr::execution_props::ExecutionProps;
 use datafusion_expr::physical_planning_context::PhysicalPlanningContext;
@@ -698,6 +700,7 @@ impl TableProvider for ListingTable {
         self.definition.as_deref()
     }
 
+    #[cfg(feature = "writes")]
     async fn insert_into(
         &self,
         state: &dyn Session,

@@ -26,8 +26,11 @@ pub use datafusion_expr::{TableProviderFilterPushDown, TableType};
 
 use crate::catalog::{TableProvider, TableProviderFactory};
 use crate::datasource::listing_table_factory::ListingTableFactory;
+#[cfg(feature = "catalog-stream")]
 use crate::datasource::stream::StreamTableFactory;
 use crate::error::Result;
+#[cfg(not(feature = "catalog-stream"))]
+use datafusion_common::not_impl_err;
 
 /// The default [`TableProviderFactory`]
 ///
@@ -35,6 +38,7 @@ use crate::error::Result;
 /// otherwise calls [`ListingTableFactory::create`]
 #[derive(Debug, Default)]
 pub struct DefaultTableFactory {
+    #[cfg(feature = "catalog-stream")]
     stream: StreamTableFactory,
     listing: ListingTableFactory,
 }
@@ -60,9 +64,15 @@ impl TableProviderFactory for DefaultTableFactory {
             }
         }
 
-        match unbounded {
-            true => self.stream.create(state, cmd).await,
-            false => self.listing.create(state, cmd).await,
+        if unbounded {
+            #[cfg(feature = "catalog-stream")]
+            return self.stream.create(state, cmd).await;
+            #[cfg(not(feature = "catalog-stream"))]
+            return not_impl_err!(
+                "Unbounded external tables require the catalog-stream feature"
+            );
         }
+
+        self.listing.create(state, cmd).await
     }
 }

@@ -17,7 +17,7 @@
 
 //! [`DataFrame`] API for building and executing query plans.
 
-#[cfg(feature = "parquet")]
+#[cfg(all(feature = "parquet", feature = "writes"))]
 mod parquet;
 
 use crate::arrow::record_batch::RecordBatch;

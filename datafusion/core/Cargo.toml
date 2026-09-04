@@ -95,7 +95,9 @@ parquet = [
     "dep:datafusion-datasource-parquet",
     "datafusion-datasource-parquet/parquet-read",
     "datafusion-datasource-parquet/object-store-reader",
+    "disk",
     "listing",
+    "runtime-tokio",
 ]
 parquet_encryption = [
     "parquet",
@@ -155,6 +157,7 @@ unicode_expressions = [
 ]
 temp-path = ["datafusion-datasource/temp-path", "datafusion-execution/temp-path"]
 writes = [
+    "datafusion-catalog-listing?/writes",
     "datafusion-datasource/writes",
     "datafusion-datasource-parquet?/parquet-write",
     "listing",

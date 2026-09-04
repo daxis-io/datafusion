@@ -18,10 +18,14 @@
 use std::sync::Arc;
 
 use super::super::options::{ParquetReadOptions, ReadOptions};
-use super::{DataFilePaths, DataFrame, ExecutionPlan, Result, SessionContext};
+#[cfg(feature = "writes")]
+use super::ExecutionPlan;
+use super::{DataFilePaths, DataFrame, Result, SessionContext};
+#[cfg(feature = "writes")]
 use datafusion_datasource_parquet::plan_to_parquet;
 
 use datafusion_common::TableReference;
+#[cfg(feature = "writes")]
 use parquet::file::properties::WriterProperties;
 
 impl SessionContext {
@@ -86,6 +90,7 @@ impl SessionContext {
     }
 
     /// Executes a query and writes the results to a partitioned Parquet file.
+    #[cfg(feature = "writes")]
     pub async fn write_parquet(
         &self,
         plan: Arc<dyn ExecutionPlan>,

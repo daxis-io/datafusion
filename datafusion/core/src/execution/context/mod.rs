@@ -116,8 +116,7 @@ use datafusion_session::SessionStore;
     doc,
     feature = "csv",
     feature = "json",
-    feature = "parquet",
-    feature = "avro"
+    all(feature = "parquet", feature = "writes")
 ))]
 use crate::physical_plan::ExecutionPlan;
 #[cfg(feature = "listing")]

@@ -932,11 +932,15 @@ pub mod variable {
     pub use datafusion_expr::var_provider::{VarProvider, VarType};
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "csv"))]
 pub mod test;
 
 mod schema_equivalence;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "catalog-stream",
+    feature = "csv"
+))]
 pub mod test_util;
 
 #[cfg(doctest)]

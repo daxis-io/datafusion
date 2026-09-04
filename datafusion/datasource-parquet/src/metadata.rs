@@ -25,10 +25,11 @@ use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{and, sum};
 use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use datafusion_common::encryption::FileDecryptionProperties;
+#[cfg(feature = "parquet-write")]
+use datafusion_common::internal_datafusion_err;
 use datafusion_common::stats::Precision;
 use datafusion_common::{
     ColumnStatistics, DataFusionError, HashMap, Result, ScalarValue, Statistics,
-    internal_datafusion_err,
 };
 use datafusion_execution::cache::cache_manager::{
     CachedFileMetadataEntry, FileMetadata, FileMetadataCache,
@@ -957,6 +958,7 @@ impl FileMetadata for CachedParquetMetaData {
 /// hive partition column that is removed before writing the Parquet file. Returns
 /// `Err` if the expression is not a simple column reference or references a column
 /// outside `input_schema`.
+#[cfg(feature = "parquet-write")]
 pub(crate) fn sort_expr_to_sorting_column(
     sort_expr: &PhysicalSortExpr,
     input_schema: &Schema,
@@ -1001,6 +1003,7 @@ pub(crate) fn sort_expr_to_sorting_column(
 /// Columns that are not present in `writer_schema` are omitted from the resulting
 /// metadata. Returns `Err` if any expression is not a simple column reference or
 /// references a column outside `input_schema`.
+#[cfg(feature = "parquet-write")]
 pub(crate) fn lex_ordering_to_sorting_columns(
     ordering: &LexOrdering,
     input_schema: &Schema,
@@ -1089,6 +1092,7 @@ mod tests {
     use arrow::compute::SortOptions;
     use arrow::datatypes::Field;
 
+    #[cfg(feature = "parquet-write")]
     #[test]
     fn test_lex_ordering_to_sorting_columns_uses_writer_schema() -> Result<()> {
         let input_schema = Schema::new(vec![

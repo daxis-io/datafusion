@@ -30,11 +30,13 @@ pub use crate::schema_coercion::{
     transform_schema_to_view,
 };
 
+#[cfg(feature = "parquet-write")]
 pub use crate::sink::ParquetSink;
 
 use arrow::datatypes::{Fields, Schema, SchemaRef};
 use datafusion_datasource::TableSchema;
 use datafusion_datasource::file_compression_type::FileCompressionType;
+#[cfg(feature = "parquet-write")]
 use datafusion_datasource::file_sink_config::FileSinkConfig;
 
 use datafusion_datasource::file_format::{FileFormat, FileFormatFactory};
@@ -42,21 +44,30 @@ use datafusion_datasource::file_format::{FileFormat, FileFormatFactory};
 use datafusion_common::Statistics;
 use datafusion_common::config::{ConfigField, ConfigFileType, TableParquetOptions};
 use datafusion_common::encryption::FileDecryptionProperties;
+#[cfg(feature = "parquet-write")]
+use datafusion_common::not_impl_err;
 use datafusion_common::parsers::CompressionTypeVariant;
 use datafusion_common::{
     DEFAULT_PARQUET_EXTENSION, DataFusionError, GetExt, Result, internal_datafusion_err,
-    internal_err, not_impl_err,
+    internal_err,
 };
 use datafusion_datasource::file::FileSource;
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
+#[cfg(feature = "parquet-write")]
 use datafusion_datasource::sink::DataSinkExec;
+#[cfg(feature = "parquet-write")]
 use datafusion_datasource::write::get_writer_schema;
+#[cfg(feature = "parquet-write")]
 use datafusion_expr::dml::InsertOp;
-use datafusion_physical_expr_common::sort_expr::{LexOrdering, LexRequirement};
+use datafusion_physical_expr_common::sort_expr::LexOrdering;
+#[cfg(feature = "parquet-write")]
+use datafusion_physical_expr_common::sort_expr::LexRequirement;
 use datafusion_physical_plan::ExecutionPlan;
 use datafusion_session::Session;
 
-use crate::metadata::{DFParquetMetadata, lex_ordering_to_sorting_columns};
+use crate::metadata::DFParquetMetadata;
+#[cfg(feature = "parquet-write")]
+use crate::metadata::lex_ordering_to_sorting_columns;
 use crate::reader::CachedParquetFileReaderFactory;
 use crate::source::{
     ParquetSource, parse_coerce_int96_string, parse_coerce_int96_tz_string,
@@ -521,6 +532,7 @@ impl FileFormat for ParquetFormat {
         Ok(DataSourceExec::from_data_source(conf))
     }
 
+    #[cfg(feature = "parquet-write")]
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
