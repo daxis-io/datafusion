@@ -1,0 +1,16 @@
+{
+  "axon_commit": "b88fbd44b329584b19682bcac5dc0a1a909a3e1e",
+  "corpus": {
+    "path": "tests/conformance/axon-engine-query-uat-corpus.json",
+    "git_blob": "0bc869e5e22e0c5a3f8e86f9ad5f51b77f1909f9",
+    "sha256": "4f121b173f2e8dbddc34573bf048cf293d034b92aa15142d4e3b89363991d7de"
+  },
+  "fixture_source": {
+    "path": "crates/wasm-datafusion-poc/tests/support/uat.rs",
+    "git_blob": "eb3e5a5addcefc77c17615053086167cd8d37957",
+    "sha256": "cf0e62bcb57ed5dac2fb64c6ffcb1ce17b921daa64308cd874013b79f9b65700"
+  },
+  "normalized_fixture_rows_sha256": "7a392b6b45b22f553a5992be46fd8297f54e2570a90eb5f20a2b4c97774a3cd4",
+  "source_datafusion_version": "53.1.0",
+  "qualification_role": "input provenance only; not Phase B evidence"
+}

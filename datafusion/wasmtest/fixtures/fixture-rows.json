@@ -1,0 +1,21 @@
+{
+  "orders": [
+    [1001, 1, "2026-05-30", "gold", "shipped", 12500, 500, true, "east"],
+    [1002, 2, "2026-05-30", "silver", "pending", 8750, null, false, "west"],
+    [1003, 1, "2026-05-29", "gold", "shipped", 22000, 1000, true, "east"],
+    [1004, 3, "2026-05-30", "bronze", "cancelled", 4000, 0, null, "south"],
+    [1005, 4, "2026-05-28", "gold", "pending", 15000, 750, false, "west"],
+    [1006, 5, "2026-05-31", "silver", "shipped", 6100, null, true, null]
+  ],
+  "customers": [
+    [1, "Northstar", "enterprise", 30000],
+    [2, "Meridian", "self_serve", 10000],
+    [3, "Redline", "self_serve", 5000],
+    [4, "Summit", "enterprise", 20000]
+  ],
+  "shipments": [
+    [1001, "2026-05-31", "UPS"],
+    [1003, "2026-05-30", "FedEx"],
+    [1006, null, null]
+  ]
+}

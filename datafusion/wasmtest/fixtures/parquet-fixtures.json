@@ -1,0 +1,21 @@
+{
+  "generator": "cargo +1.97.0 run -p datafusion-exact-stack-fixture-generator --offline -- <output-directory>",
+  "generator_evidence": "195-exact-arrow-parquet-fixture-generator",
+  "arrow_candidate_sha": "bd67b91e2a13cdb07621433715105fe91064dc81",
+  "arrow_candidate_tree": "89976a0a2f3bc03327043c2da6612d2e74d1751e",
+  "logical_rows_sha256": "ba414f136ecd01c82fe692abe313e24d382d05c5c2c6405b8aec2f45caedb3ef",
+  "schema_sha256": "e9796631cfd34a1d743538333ba30d58b7c2083d8c6596ab54a8808cb5af538f",
+  "schema_canonical": "order_id:int64:not-null,customer_id:int64:not-null,order_date:utf8:not-null,customer_tier:utf8:not-null,status:utf8:not-null,amount_cents:int64:not-null,discount_cents:int64:nullable,is_priority:boolean:nullable,region:utf8:nullable",
+  "fixtures": [
+    {
+      "path": "orders-uncompressed.parquet",
+      "compression": "UNCOMPRESSED",
+      "sha256": "d1cacf639ebbd275ca08c448fcd9e97cec3a1098b45086cd33635a6a0113c462"
+    },
+    {
+      "path": "orders-zstd.parquet",
+      "compression": "ZSTD",
+      "sha256": "aa933393c3ad8d2c866941e05bb77b264047622a1de24013baf30eb37c24db7f"
+    }
+  ]
+}

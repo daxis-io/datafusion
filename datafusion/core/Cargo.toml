@@ -46,7 +46,7 @@ array_expressions = ["nested_expressions"]
 # Used to enable the avro format
 avro = ["datafusion-datasource-avro", "listing"]
 backtrace = ["datafusion-common/backtrace"]
-browser = ["runtime-browser"]
+browser = ["runtime-browser", "chrono/wasmbind"]
 catalog-stream = ["listing", "datafusion-catalog/catalog-stream"]
 compression = [
     "liblzma",

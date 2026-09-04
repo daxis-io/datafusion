@@ -40,33 +40,32 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[dependencies]
-# chrono must be compiled with wasmbind feature
-chrono = { version = "0.4", features = ["wasmbind"] }
-# The `console_error_panic_hook` crate provides better debugging of panics by
-# logging them with `console.error`. This is great for development, but requires
-# all the `std::fmt` and `std::panicking` infrastructure, so isn't great for
-# code size when deploying.
-console_error_panic_hook = { version = "0.1.1", optional = true }
-datafusion = { workspace = true, features = ["compression", "parquet", "sql"] }
-datafusion-common = { workspace = true }
-datafusion-execution = { workspace = true }
-datafusion-expr = { workspace = true }
-datafusion-optimizer = { workspace = true, default-features = true }
-datafusion-physical-plan = { workspace = true }
-datafusion-sql = { workspace = true }
-# needs to be compiled
-getrandom = { version = "0.3", features = ["wasm_js"] }
-wasm-bindgen = "0.2.99"
+[features]
+default = []
+console_error_panic_hook = ["dep:console_error_panic_hook"]
+exact-stack-parquet = [
+    "dep:bytes",
+    "dep:datafusion-datasource",
+    "dep:datafusion-datasource-parquet",
+    "dep:parquet",
+    "parquet/experimental",
+]
 
-[dev-dependencies]
-bytes = { workspace = true }
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true, optional = true }
+console_error_panic_hook = { version = "0.1.1", optional = true }
+datafusion = { workspace = true, default-features = false, features = ["browser", "sql"] }
+datafusion-common-runtime = { workspace = true, default-features = false, features = ["runtime-browser"] }
+datafusion-datasource = { workspace = true, default-features = false, features = ["runtime-browser"], optional = true }
+datafusion-datasource-parquet = { workspace = true, default-features = false, features = ["parquet-read", "runtime-browser"], optional = true }
 futures = { workspace = true }
-object_store = { workspace = true }
-# needs to be compiled
-tokio = { workspace = true }
-url = { workspace = true }
-wasm-bindgen-test = "0.3.66"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+parquet = { workspace = true, default-features = false, features = ["arrow"], optional = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+wasm-bindgen = "=0.2.118"
+wasm-bindgen-futures = "=0.4.68"
 
 [package.metadata.cargo-machete]
-ignored = ["chrono", "getrandom"]
+ignored = ["getrandom", "wasm-bindgen-futures"]
