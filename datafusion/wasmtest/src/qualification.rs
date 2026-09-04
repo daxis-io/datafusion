@@ -54,6 +54,7 @@ pub fn qualify_context_construction() -> Result<String> {
 
 pub async fn qualify_fixture_registration() -> Result<String> {
     let (_ctx, _) = make_context()?;
+    yield_now().await;
     Ok("fixtures=orders,customers,shipments".into())
 }
 

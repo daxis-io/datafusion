@@ -327,7 +327,7 @@ fn table_rows<'a>(root: &'a Value, table: &str) -> Result<&'a [Value]> {
         })
 }
 
-fn cell<'a>(rows: &'a [Value], row: usize, column: usize) -> Result<&'a Value> {
+fn cell(rows: &[Value], row: usize, column: usize) -> Result<&Value> {
     rows.get(row)
         .and_then(Value::as_array)
         .and_then(|row| row.get(column))
@@ -361,7 +361,7 @@ fn optional_int_column(rows: &[Value], column: usize) -> Result<Vec<Option<i64>>
         .collect()
 }
 
-fn string_column<'a>(rows: &'a [Value], column: usize) -> Result<Vec<&'a str>> {
+fn string_column(rows: &[Value], column: usize) -> Result<Vec<&str>> {
     (0..rows.len())
         .map(|row| {
             cell(rows, row, column)?.as_str().ok_or_else(|| {
@@ -373,10 +373,7 @@ fn string_column<'a>(rows: &'a [Value], column: usize) -> Result<Vec<&'a str>> {
         .collect()
 }
 
-fn optional_string_column<'a>(
-    rows: &'a [Value],
-    column: usize,
-) -> Result<Vec<Option<&'a str>>> {
+fn optional_string_column(rows: &[Value], column: usize) -> Result<Vec<Option<&str>>> {
     (0..rows.len())
         .map(|row| {
             let value = cell(rows, row, column)?;

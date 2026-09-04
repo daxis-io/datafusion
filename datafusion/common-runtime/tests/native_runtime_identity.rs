@@ -22,7 +22,7 @@ use datafusion_common_runtime::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use datafusion_common_runtime::{JoinSet, SpawnedTask};
 
 #[test]
-#[allow(
+#[expect(
     unused_qualifications,
     reason = "qualified Tokio paths are the identity asserted by this compatibility test"
 )]
@@ -32,7 +32,8 @@ fn native_channels_and_sync_types_are_tokio_types() {
     let _: mpsc::Sender<u8> = sender;
 
     let (sender, receiver): (tokio::sync::oneshot::Sender<u8>, _) = oneshot::channel();
-    let _: tokio::sync::oneshot::Receiver<u8> = receiver;
+    let receiver: tokio::sync::oneshot::Receiver<u8> = receiver;
+    std::mem::drop(receiver);
     let _: oneshot::Sender<u8> = sender;
 
     fn accepts_tokio_mutex(_: tokio::sync::Mutex<u8>) {}
