@@ -30,23 +30,45 @@ version.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+catalog-stream = []
+default = ["catalog-stream", "runtime-tokio"]
+runtime-browser = [
+    "datafusion-common-runtime/runtime-browser",
+    "datafusion-datasource/runtime-browser",
+    "datafusion-execution/runtime-browser",
+    "datafusion-physical-expr/runtime-browser",
+    "datafusion-physical-plan/runtime-browser",
+    "datafusion-session/runtime-browser",
+]
+runtime-tokio = [
+    "datafusion-common-runtime/runtime-tokio",
+    "datafusion-datasource/runtime-tokio",
+    "datafusion-execution/runtime-tokio",
+    "datafusion-physical-expr/runtime-tokio",
+    "datafusion-physical-plan/runtime-tokio",
+    "datafusion-session/runtime-tokio",
+]
+
 [dependencies]
 arrow = { workspace = true }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
 datafusion-common = { workspace = true }
-datafusion-common-runtime = { workspace = true }
-datafusion-datasource = { workspace = true }
-datafusion-execution = { workspace = true }
+datafusion-common-runtime = { workspace = true, default-features = false }
+datafusion-datasource = { workspace = true, default-features = false }
+datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true }
-datafusion-physical-expr = { workspace = true }
-datafusion-physical-plan = { workspace = true }
-datafusion-session = { workspace = true }
+datafusion-physical-expr = { workspace = true, default-features = false }
+datafusion-physical-plan = { workspace = true, default-features = false }
+datafusion-session = { workspace = true, default-features = false }
 futures = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }
 
 # Note: add additional linter rules in lib.rs.

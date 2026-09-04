@@ -38,7 +38,19 @@ all-features = true
 workspace = true
 
 [features]
+default = ["runtime-tokio", "spill"]
 force_hash_collisions = []
+runtime-browser = [
+    "datafusion-common-runtime/runtime-browser",
+    "datafusion-execution/runtime-browser",
+    "datafusion-physical-expr/runtime-browser",
+]
+runtime-tokio = [
+    "datafusion-common-runtime/runtime-tokio",
+    "datafusion-execution/runtime-tokio",
+    "datafusion-physical-expr/runtime-tokio",
+]
+spill = ["arrow-ipc/lz4", "arrow-ipc/zstd", "datafusion-execution/spill"]
 test_utils = ["arrow/test_utils"]
 tokio_coop = []
 tokio_coop_fallback = []
@@ -61,19 +73,19 @@ arrow-data = { workspace = true }
 # Spill IPC writes require lz4 and zstd codec support. Keep these features in
 # sync with the SpillCompression variants in datafusion-common so codec
 # availability is explicit in the crate that owns spill handling.
-arrow-ipc = { workspace = true, features = ["lz4", "zstd"] }
+arrow-ipc = { workspace = true }
 arrow-ord = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 datafusion-common = { workspace = true }
-datafusion-common-runtime = { workspace = true, default-features = true }
-datafusion-execution = { workspace = true }
+datafusion-common-runtime = { workspace = true, default-features = false }
+datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true }
 datafusion-functions = { workspace = true }
 datafusion-functions-aggregate-common = { workspace = true }
 datafusion-functions-window-common = { workspace = true }
-datafusion-physical-expr = { workspace = true, default-features = true }
+datafusion-physical-expr = { workspace = true, default-features = false }
 datafusion-physical-expr-common = { workspace = true }
 datafusion-proto-common = { workspace = true, optional = true }
 datafusion-proto-models = { workspace = true, optional = true }
@@ -87,6 +99,8 @@ num-traits = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }
 
 [dev-dependencies]

@@ -18,25 +18,41 @@
 //! [`ParquetFileReaderFactory`] and [`DefaultParquetFileReaderFactory`] for
 //! low level control of parquet file readers
 
+#[cfg(feature = "object-store-reader")]
 use crate::ParquetFileMetrics;
+#[cfg(feature = "object-store-reader")]
 use crate::metadata::DFParquetMetadata;
+#[cfg(feature = "object-store-reader")]
 use bytes::Bytes;
+#[cfg(feature = "object-store-reader")]
 use datafusion_common::HashMap;
 use datafusion_datasource::PartitionedFile;
+#[cfg(feature = "object-store-reader")]
 use datafusion_execution::cache::cache_manager::FileMetadata;
+#[cfg(feature = "object-store-reader")]
 use datafusion_execution::cache::cache_manager::FileMetadataCache;
 use datafusion_physical_plan::metrics::ExecutionPlanMetricsSet;
+#[cfg(feature = "object-store-reader")]
 use futures::FutureExt;
+#[cfg(feature = "object-store-reader")]
 use futures::TryFutureExt;
+#[cfg(feature = "object-store-reader")]
 use futures::future::BoxFuture;
+#[cfg(feature = "object-store-reader")]
 use object_store::{ObjectStore, ObjectStoreExt};
+#[cfg(feature = "object-store-reader")]
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
+#[cfg(feature = "object-store-reader")]
 use parquet::errors::ParquetError;
+#[cfg(feature = "object-store-reader")]
 use parquet::file::metadata::ParquetMetaData;
+#[cfg(feature = "object-store-reader")]
 use std::any::Any;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
+#[cfg(feature = "object-store-reader")]
 use std::ops::Range;
+#[cfg(feature = "object-store-reader")]
 use std::sync::Arc;
 
 /// Interface for reading Apache Parquet files.
@@ -70,6 +86,51 @@ pub trait ParquetFileReaderFactory: Debug + Send + Sync + 'static {
     ) -> datafusion_common::Result<Box<dyn AsyncFileReader + Send>>;
 }
 
+/// Typed error returned when the custom-reader-only profile has no injected reader.
+#[derive(Debug)]
+pub struct ParquetFileReaderFactoryRequired {
+    profile: &'static str,
+    capability: &'static str,
+}
+
+impl ParquetFileReaderFactoryRequired {
+    /// Create the stable custom-reader-only capability error.
+    pub fn new() -> Self {
+        Self {
+            profile: "custom-reader-only",
+            capability: "object-store-reader",
+        }
+    }
+
+    /// The selected runtime profile.
+    pub fn profile(&self) -> &'static str {
+        self.profile
+    }
+
+    /// The missing optional capability.
+    pub fn capability(&self) -> &'static str {
+        self.capability
+    }
+}
+
+impl Default for ParquetFileReaderFactoryRequired {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Display for ParquetFileReaderFactoryRequired {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "ParquetFileReaderFactory must be injected for profile {} because capability {} is disabled",
+            self.profile, self.capability
+        )
+    }
+}
+
+impl std::error::Error for ParquetFileReaderFactoryRequired {}
+
 /// Default implementation of [`ParquetFileReaderFactory`]
 ///
 /// This implementation:
@@ -77,10 +138,12 @@ pub trait ParquetFileReaderFactory: Debug + Send + Sync + 'static {
 /// 2. Reads the footer and page metadata on demand.
 /// 3. Does not cache metadata or coalesce I/O operations.
 #[derive(Debug)]
+#[cfg(feature = "object-store-reader")]
 pub struct DefaultParquetFileReaderFactory {
     store: Arc<dyn ObjectStore>,
 }
 
+#[cfg(feature = "object-store-reader")]
 impl DefaultParquetFileReaderFactory {
     /// Create a new `DefaultParquetFileReaderFactory`.
     pub fn new(store: Arc<dyn ObjectStore>) -> Self {
@@ -88,6 +151,7 @@ impl DefaultParquetFileReaderFactory {
     }
 }
 
+#[cfg(feature = "object-store-reader")]
 impl ParquetFileReaderFactory for DefaultParquetFileReaderFactory {
     fn create_reader(
         &self,
@@ -119,11 +183,13 @@ impl ParquetFileReaderFactory for DefaultParquetFileReaderFactory {
 /// [`ArrowReaderOptions`] to [`DFParquetMetadata::fetch_metadata`], so callers such as the
 /// parquet opener can skip page-index I/O during the initial metadata load.
 #[derive(Debug)]
+#[cfg(feature = "object-store-reader")]
 pub struct CachedParquetFileReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<FileMetadataCache>,
 }
 
+#[cfg(feature = "object-store-reader")]
 impl CachedParquetFileReaderFactory {
     pub fn new(
         store: Arc<dyn ObjectStore>,
@@ -136,6 +202,7 @@ impl CachedParquetFileReaderFactory {
     }
 }
 
+#[cfg(feature = "object-store-reader")]
 impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
     fn create_reader(
         &self,
@@ -176,6 +243,7 @@ impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
 /// This implementation does not coalesce I/O operations or cache bytes. Such
 /// optimizations can be done either at the object store level or by providing
 /// a custom implementation of [`ParquetFileReaderFactory`].
+#[cfg(feature = "object-store-reader")]
 pub struct ParquetFileReader {
     file_metrics: ParquetFileMetrics,
     store: Arc<dyn ObjectStore>,
@@ -184,6 +252,7 @@ pub struct ParquetFileReader {
     metadata_size_hint: Option<usize>,
 }
 
+#[cfg(feature = "object-store-reader")]
 impl ParquetFileReader {
     /// Create a new `ParquetFileReader`.
     ///
@@ -235,6 +304,7 @@ impl ParquetFileReader {
     }
 }
 
+#[cfg(feature = "object-store-reader")]
 impl AsyncFileReader for ParquetFileReader {
     fn get_bytes(
         &mut self,
@@ -302,6 +372,7 @@ impl AsyncFileReader for ParquetFileReader {
     }
 }
 
+#[cfg(feature = "object-store-reader")]
 impl Drop for ParquetFileReader {
     fn drop(&mut self) {
         self.file_metrics
@@ -315,8 +386,10 @@ impl Drop for ParquetFileReader {
 }
 
 /// Wrapper to implement [`FileMetadata`] for [`ParquetMetaData`].
+#[cfg(feature = "object-store-reader")]
 pub struct CachedParquetMetaData(Arc<ParquetMetaData>);
 
+#[cfg(feature = "object-store-reader")]
 impl CachedParquetMetaData {
     pub fn new(metadata: Arc<ParquetMetaData>) -> Self {
         Self(metadata)
@@ -327,6 +400,7 @@ impl CachedParquetMetaData {
     }
 }
 
+#[cfg(feature = "object-store-reader")]
 impl FileMetadata for CachedParquetMetaData {
     fn as_any(&self) -> &dyn Any {
         self

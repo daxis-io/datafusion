@@ -25,6 +25,23 @@
 // https://github.com/apache/datafusion/issues/11143
 #![deny(clippy::clone_on_ref_ptr)]
 
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "runtime-tokio"
+))]
+compile_error!(
+    "runtime-tokio is not supported on wasm32-unknown-unknown; select runtime-browser"
+);
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "runtime-browser")
+))]
+compile_error!(
+    "a browser runtime is required on wasm32-unknown-unknown; enable runtime-browser"
+);
+
 pub mod common;
 mod join_set;
 mod trace_utils;

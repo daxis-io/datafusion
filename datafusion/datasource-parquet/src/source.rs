@@ -20,8 +20,11 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::sync::Arc;
 
+#[cfg(feature = "object-store-reader")]
 use crate::DefaultParquetFileReaderFactory;
 use crate::ParquetFileReaderFactory;
+#[cfg(not(feature = "object-store-reader"))]
+use crate::ParquetFileReaderFactoryRequired;
 use crate::opener::ParquetMorselizer;
 use crate::opener::build_pruning_predicates;
 use crate::opener::build_virtual_columns_state;
@@ -579,10 +582,22 @@ impl FileSource for ParquetSource {
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
-        let parquet_file_reader_factory =
-            self.parquet_file_reader_factory.clone().unwrap_or_else(|| {
-                Arc::new(DefaultParquetFileReaderFactory::new(object_store)) as _
-            });
+        let parquet_file_reader_factory = match self.parquet_file_reader_factory.clone() {
+            Some(factory) => factory,
+            None => {
+                #[cfg(feature = "object-store-reader")]
+                {
+                    Arc::new(DefaultParquetFileReaderFactory::new(object_store)) as _
+                }
+                #[cfg(not(feature = "object-store-reader"))]
+                {
+                    let _ = object_store;
+                    return Err(DataFusionError::External(Box::new(
+                        ParquetFileReaderFactoryRequired::new(),
+                    )));
+                }
+            }
+        };
 
         #[cfg(feature = "parquet_encryption")]
         let file_decryption_properties = self

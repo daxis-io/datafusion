@@ -39,20 +39,24 @@ all-features = true
 workspace = true
 
 [features]
+arrow = ["dep:datafusion-datasource-arrow"]
 nested_expressions = ["datafusion-functions-nested"]
 # This feature is deprecated. Use the `nested_expressions` feature instead.
 array_expressions = ["nested_expressions"]
 # Used to enable the avro format
 avro = ["datafusion-datasource-avro"]
 backtrace = ["datafusion-common/backtrace"]
+browser = ["runtime-browser"]
+catalog-stream = ["dep:datafusion-catalog-listing", "datafusion-catalog/catalog-stream"]
 compression = [
     "liblzma",
     "bzip2",
     "flate2",
     "zstd",
-    "datafusion-datasource-arrow/compression",
+    "datafusion-datasource-arrow?/compression",
     "datafusion-datasource/compression",
 ]
+csv = ["dep:datafusion-datasource-csv"]
 crypto_expressions = ["datafusion-functions/crypto_expressions"]
 datetime_expressions = ["datafusion-functions/datetime_expressions"]
 default = [
@@ -63,16 +67,33 @@ default = [
     "regex_expressions",
     "string_expressions",
     "unicode_expressions",
+    "arrow",
+    "catalog-stream",
     "compression",
+    "csv",
+    "disk",
+    "json",
     "parquet",
     "recursive_protection",
+    "runtime-tokio",
+    "spill",
     "sql",
+    "temp-path",
+    "writes",
 ]
+disk = ["datafusion-execution/disk"]
 encoding_expressions = ["datafusion-functions/encoding_expressions"]
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion-physical-plan/force_hash_collisions", "datafusion-common/force_hash_collisions"]
 math_expressions = ["datafusion-functions/math_expressions"]
-parquet = ["datafusion-common/parquet", "dep:parquet", "datafusion-datasource-parquet"]
+json = ["dep:datafusion-datasource-json"]
+parquet = [
+    "datafusion-common/parquet",
+    "dep:parquet",
+    "dep:datafusion-datasource-parquet",
+    "datafusion-datasource-parquet/parquet-read",
+    "datafusion-datasource-parquet/object-store-reader",
+]
 parquet_encryption = [
     "parquet",
     "parquet/encryption",
@@ -91,6 +112,26 @@ recursive_protection = [
     "datafusion-sql?/recursive_protection",
     "sqlparser?/recursive-protection",
 ]
+runtime-browser = [
+    "datafusion-catalog/runtime-browser",
+    "datafusion-common-runtime/runtime-browser",
+    "datafusion-datasource/runtime-browser",
+    "datafusion-datasource-parquet?/runtime-browser",
+    "datafusion-execution/runtime-browser",
+    "datafusion-physical-expr/runtime-browser",
+    "datafusion-physical-plan/runtime-browser",
+    "datafusion-session/runtime-browser",
+]
+runtime-tokio = [
+    "datafusion-catalog/runtime-tokio",
+    "datafusion-common-runtime/runtime-tokio",
+    "datafusion-datasource/runtime-tokio",
+    "datafusion-datasource-parquet?/runtime-tokio",
+    "datafusion-execution/runtime-tokio",
+    "datafusion-physical-expr/runtime-tokio",
+    "datafusion-physical-plan/runtime-tokio",
+    "datafusion-session/runtime-tokio",
+]
 serde = [
     "dep:serde",
     # Enable `#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]`
@@ -103,10 +144,16 @@ sql = [
     "datafusion-sql",
     "sqlparser",
 ]
+spill = ["datafusion-execution/spill", "datafusion-physical-plan/spill"]
 string_expressions = ["datafusion-functions/string_expressions"]
 unicode_expressions = [
     "datafusion-sql?/unicode_expressions",
     "datafusion-functions/unicode_expressions",
+]
+temp-path = ["datafusion-datasource/temp-path", "datafusion-execution/temp-path"]
+writes = [
+    "datafusion-datasource/writes",
+    "datafusion-datasource-parquet?/parquet-write",
 ]
 extended_tests = []
 
@@ -116,17 +163,17 @@ arrow-schema = { workspace = true, features = ["canonical_extension_types"] }
 async-trait = { workspace = true }
 bzip2 = { workspace = true, optional = true }
 chrono = { workspace = true }
-datafusion-catalog = { workspace = true }
-datafusion-catalog-listing = { workspace = true }
+datafusion-catalog = { workspace = true, default-features = false }
+datafusion-catalog-listing = { workspace = true, optional = true }
 datafusion-common = { workspace = true, features = ["object_store"] }
-datafusion-common-runtime = { workspace = true }
-datafusion-datasource = { workspace = true }
-datafusion-datasource-arrow = { workspace = true }
+datafusion-common-runtime = { workspace = true, default-features = false }
+datafusion-datasource = { workspace = true, default-features = false }
+datafusion-datasource-arrow = { workspace = true, optional = true }
 datafusion-datasource-avro = { workspace = true, optional = true }
-datafusion-datasource-csv = { workspace = true }
-datafusion-datasource-json = { workspace = true }
+datafusion-datasource-csv = { workspace = true, optional = true }
+datafusion-datasource-json = { workspace = true, optional = true }
 datafusion-datasource-parquet = { workspace = true, optional = true }
-datafusion-execution = { workspace = true }
+datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true, default-features = false }
 datafusion-expr-common = { workspace = true }
 datafusion-functions = { workspace = true }
@@ -135,12 +182,12 @@ datafusion-functions-nested = { workspace = true, default-features = false, opti
 datafusion-functions-table = { workspace = true }
 datafusion-functions-window = { workspace = true }
 datafusion-optimizer = { workspace = true }
-datafusion-physical-expr = { workspace = true }
+datafusion-physical-expr = { workspace = true, default-features = false }
 datafusion-physical-expr-adapter = { workspace = true }
 datafusion-physical-expr-common = { workspace = true }
 datafusion-physical-optimizer = { workspace = true }
-datafusion-physical-plan = { workspace = true }
-datafusion-session = { workspace = true }
+datafusion-physical-plan = { workspace = true, default-features = false }
+datafusion-session = { workspace = true, default-features = false }
 datafusion-sql = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 futures = { workspace = true }
@@ -150,14 +197,16 @@ liblzma = { workspace = true, optional = true }
 log = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
-parquet = { workspace = true, optional = true, default-features = true }
+parquet = { workspace = true, optional = true, default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 sqlparser = { workspace = true, optional = true }
-tempfile = { workspace = true }
-tokio = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4", "js"] }
 zstd = { workspace = true, optional = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

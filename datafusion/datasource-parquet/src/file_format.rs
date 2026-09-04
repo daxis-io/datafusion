@@ -621,7 +621,7 @@ impl MetadataFetch for ObjectStoreFetch<'_> {
             self.store
                 .get_range(&self.meta.location, range)
                 .await
-                .map_err(ParquetError::from)
+                .map_err(|error| ParquetError::External(Box::new(error)))
         }
         .boxed()
     }

@@ -40,9 +40,16 @@ workspace = true
 [lib]
 name = "datafusion_common_runtime"
 
+[features]
+default = ["runtime-tokio"]
+runtime-browser = []
+runtime-tokio = []
+
 [dependencies]
 futures = { workspace = true }
 log = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio = { workspace = true }
 
 [dev-dependencies]

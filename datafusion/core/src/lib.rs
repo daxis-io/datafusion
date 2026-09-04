@@ -763,6 +763,43 @@
 //! [`Array`]: arrow::array::Array
 #![doc = include_str!("optimizer_rule_reference.md")]
 
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    feature = "runtime-tokio"
+))]
+compile_error!(
+    "datafusion/runtime-tokio is not supported on wasm32-unknown-unknown; use datafusion/browser"
+);
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "runtime-browser")
+))]
+compile_error!(
+    "datafusion on wasm32-unknown-unknown requires the browser feature or runtime-browser"
+);
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    any(
+        feature = "arrow",
+        feature = "avro",
+        feature = "compression",
+        feature = "csv",
+        feature = "json",
+        feature = "parquet",
+        feature = "writes",
+        feature = "catalog-stream",
+        feature = "disk",
+        feature = "spill",
+        feature = "temp-path"
+    )
+))]
+compile_error!(
+    "native DataFusion capabilities (built-in formats, writes, compression, catalog streaming, disk, temp paths, or spill) are not supported by the browser profile; use default-features = false with features = [\"browser\", \"sql\"]"
+);
+
 extern crate core;
 #[cfg(feature = "sql")]
 extern crate sqlparser;

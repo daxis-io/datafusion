@@ -82,8 +82,10 @@ object_store = { workspace = true, optional = true }
 parquet = { workspace = true, optional = true, default-features = true }
 recursive = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
-tokio = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+tokio = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 web-time = "1.1.0"

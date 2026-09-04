@@ -33,7 +33,7 @@ all-features = true
 [features]
 backtrace = ["datafusion-common/backtrace"]
 compression = ["async-compression", "liblzma", "bzip2", "flate2", "zstd", "tokio-util"]
-default = ["compression"]
+default = ["compression", "runtime-tokio", "temp-path", "writes"]
 # Enables protobuf conversions for datasource types, source serialization hooks,
 # and the shared `FileScanConfig` <-> proto conversion. Off by default so
 # consumers that never serialize plans pay nothing. Mirrors the `proto` feature
@@ -42,6 +42,22 @@ proto = [
     "dep:datafusion-proto-models",
     "datafusion-physical-plan/proto",
 ]
+runtime-browser = [
+    "datafusion-common-runtime/runtime-browser",
+    "datafusion-execution/runtime-browser",
+    "datafusion-physical-expr/runtime-browser",
+    "datafusion-physical-plan/runtime-browser",
+    "datafusion-session/runtime-browser",
+]
+runtime-tokio = [
+    "datafusion-common-runtime/runtime-tokio",
+    "datafusion-execution/runtime-tokio",
+    "datafusion-physical-expr/runtime-tokio",
+    "datafusion-physical-plan/runtime-tokio",
+    "datafusion-session/runtime-tokio",
+]
+temp-path = ["dep:tempfile"]
+writes = ["dep:rand"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -57,15 +73,15 @@ bytes = { workspace = true }
 bzip2 = { workspace = true, optional = true }
 chrono = { workspace = true }
 datafusion-common = { workspace = true, features = ["object_store"] }
-datafusion-common-runtime = { workspace = true }
-datafusion-execution = { workspace = true }
+datafusion-common-runtime = { workspace = true, default-features = false }
+datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true }
-datafusion-physical-expr = { workspace = true }
+datafusion-physical-expr = { workspace = true, default-features = false }
 datafusion-physical-expr-adapter = { workspace = true }
 datafusion-physical-expr-common = { workspace = true }
-datafusion-physical-plan = { workspace = true }
+datafusion-physical-plan = { workspace = true, default-features = false }
 datafusion-proto-models = { workspace = true, optional = true }
-datafusion-session = { workspace = true }
+datafusion-session = { workspace = true, default-features = false }
 flate2 = { workspace = true, optional = true }
 futures = { workspace = true }
 glob = { workspace = true }
@@ -74,12 +90,14 @@ liblzma = { workspace = true, optional = true }
 log = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
-rand = { workspace = true }
+rand = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
-tokio = { workspace = true }
 tokio-util = { version = "0.7.17", features = ["io"], optional = true }
 url = { workspace = true }
 zstd = { workspace = true, optional = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+tokio = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

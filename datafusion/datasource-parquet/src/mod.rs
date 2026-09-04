@@ -27,7 +27,9 @@
 pub mod access_plan;
 mod bloom_filter;
 mod decoder_projection;
+#[cfg(feature = "object-store-reader")]
 pub mod file_format;
+#[cfg(feature = "object-store-reader")]
 pub mod metadata;
 mod metrics;
 mod nested_schema_pruning;
@@ -39,6 +41,7 @@ mod reader;
 mod row_filter;
 mod row_group_filter;
 mod schema_coercion;
+#[cfg(feature = "parquet-write")]
 mod sink;
 mod sort;
 pub mod source;
@@ -46,10 +49,12 @@ mod supported_predicates;
 #[cfg(test)]
 mod test_util;
 mod virtual_column;
+#[cfg(feature = "parquet-write")]
 mod writer;
 
 pub use access_plan::{ParquetAccessPlan, ParquetRowSelection, RowGroupAccess};
 pub use bloom_filter::BloomFilterStatistics;
+#[cfg(feature = "object-store-reader")]
 pub use file_format::*;
 pub use metrics::ParquetFileMetrics;
 pub use page_filter::PagePruningAccessPlanFilter;
@@ -63,6 +68,8 @@ pub use schema_coercion::{
     Int96Coercer, apply_file_schema_type_coercions, transform_binary_to_string,
     transform_schema_to_view,
 };
+#[cfg(feature = "parquet-write")]
 pub use sink::ParquetSink;
 pub use virtual_column::ParquetVirtualColumn;
+#[cfg(feature = "parquet-write")]
 pub use writer::plan_to_parquet;

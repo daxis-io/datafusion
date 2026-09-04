@@ -30,13 +30,24 @@ version.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default = ["runtime-tokio"]
+runtime-browser = [
+    "datafusion-execution/runtime-browser",
+    "datafusion-physical-plan/runtime-browser",
+]
+runtime-tokio = [
+    "datafusion-execution/runtime-tokio",
+    "datafusion-physical-plan/runtime-tokio",
+]
+
 [dependencies]
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 datafusion-common = { workspace = true }
-datafusion-execution = { workspace = true }
+datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true }
-datafusion-physical-plan = { workspace = true }
+datafusion-physical-plan = { workspace = true, default-features = false }
 parking_lot = { workspace = true }
 
 # Note: add additional linter rules in lib.rs.

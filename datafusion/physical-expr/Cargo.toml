@@ -41,7 +41,10 @@ workspace = true
 name = "datafusion_physical_expr"
 
 [features]
+default = ["runtime-tokio"]
 recursive_protection = ["dep:recursive"]
+runtime-browser = ["datafusion-common-runtime/runtime-browser"]
+runtime-tokio = ["datafusion-common-runtime/runtime-tokio"]
 # Forwards the `proto` feature to `datafusion-physical-expr-common`, exposing
 # `PhysicalExpr::to_proto` and letting expressions in this crate implement it.
 proto = [
@@ -52,6 +55,7 @@ proto = [
 [dependencies]
 arrow = { workspace = true }
 datafusion-common = { workspace = true }
+datafusion-common-runtime = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true }
 datafusion-expr-common = { workspace = true }
 datafusion-functions-aggregate-common = { workspace = true }
@@ -63,8 +67,10 @@ itertools = { workspace = true, features = ["use_std"] }
 parking_lot = { workspace = true }
 petgraph = "0.8.3"
 recursive = { workspace = true, optional = true }
-tokio = { workspace = true }
 half = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+tokio = { workspace = true }
 
 [dev-dependencies]
 arrow = { workspace = true, features = ["test_utils"] }
