@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -936,6 +936,7 @@ pub struct PhysicalPlanDecodeContext<'a> {
     task_ctx: &'a TaskContext,
     codec: &'a dyn PhysicalExtensionCodec,
     scalar_subquery_results: Option<ScalarSubqueryResults>,
+    extensions: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl<'a> PhysicalPlanDecodeContext<'a> {
@@ -945,7 +946,19 @@ impl<'a> PhysicalPlanDecodeContext<'a> {
             task_ctx,
             codec,
             scalar_subquery_results: None,
+            extensions: Arc::new(HashMap::new()),
         }
+    }
+
+    /// Add a typed extension used while reconstructing execution plans.
+    pub fn with_extension<T: Any + Send + Sync>(mut self, extension: T) -> Self {
+        Arc::make_mut(&mut self.extensions)
+            .insert(TypeId::of::<T>(), Arc::new(extension));
+        self
+    }
+
+    fn extension(&self, type_id: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.extensions.get(&type_id).cloned()
     }
 
     /// Returns the task context used for deserialization.
@@ -974,6 +987,7 @@ impl<'a> PhysicalPlanDecodeContext<'a> {
             task_ctx: self.task_ctx,
             codec: self.codec,
             scalar_subquery_results: Some(scalar_subquery_results),
+            extensions: Arc::clone(&self.extensions),
         }
     }
 }
@@ -2096,6 +2110,10 @@ impl ExecutionPlanDecode for ConverterPlanDecoder<'_, '_> {
 
     fn task_ctx(&self) -> &TaskContext {
         self.ctx.task_ctx()
+    }
+
+    fn extension(&self, type_id: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.ctx.extension(type_id)
     }
 
     // Lookup-order policy, owned here so no plan re-derives it: an explicit

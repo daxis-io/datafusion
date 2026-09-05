@@ -40,8 +40,9 @@ pub mod mpsc {
 
     use async_lock::{Semaphore, SemaphoreGuardArc};
     use event_listener::Event;
-    use futures::Stream;
     use futures::channel::mpsc as futures_mpsc;
+    use futures::future::{Either, select};
+    use futures::{Stream, pin_mut};
 
     #[derive(Debug)]
     struct ChannelState {
@@ -177,10 +178,16 @@ pub mod mpsc {
     impl<T> Sender<T> {
         /// Send a value once a global channel credit becomes available.
         pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
+            let closed = self.state.closed.listen();
             if self.is_closed() {
                 return Err(SendError(value));
             }
-            let credit = Arc::clone(&self.credits).acquire_arc().await;
+            let credit = Arc::clone(&self.credits).acquire_arc();
+            pin_mut!(closed, credit);
+            let credit = match select(credit, closed).await {
+                Either::Left((credit, _)) => credit,
+                Either::Right((_, _)) => return Err(SendError(value)),
+            };
             if self.is_closed() {
                 return Err(SendError(value));
             }

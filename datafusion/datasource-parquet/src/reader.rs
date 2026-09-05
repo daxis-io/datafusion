@@ -52,7 +52,6 @@ use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 #[cfg(feature = "object-store-reader")]
 use std::ops::Range;
-#[cfg(feature = "object-store-reader")]
 use std::sync::Arc;
 
 /// Interface for reading Apache Parquet files.
@@ -84,6 +83,32 @@ pub trait ParquetFileReaderFactory: Debug + Send + Sync + 'static {
         metadata_size_hint: Option<usize>,
         metrics: &ExecutionPlanMetricsSet,
     ) -> datafusion_common::Result<Box<dyn AsyncFileReader + Send>>;
+}
+
+/// Reader factory supplied by a caller while decoding a protobuf plan.
+#[derive(Clone)]
+pub struct ParquetFileReaderFactoryResolver {
+    factory: Arc<dyn ParquetFileReaderFactory>,
+}
+
+impl ParquetFileReaderFactoryResolver {
+    /// Create a decode-time reader-factory resolver.
+    pub fn new(factory: Arc<dyn ParquetFileReaderFactory>) -> Self {
+        Self { factory }
+    }
+
+    /// Return the reader factory for the decoded scan.
+    pub fn resolve(&self) -> Arc<dyn ParquetFileReaderFactory> {
+        Arc::clone(&self.factory)
+    }
+}
+
+impl Debug for ParquetFileReaderFactoryResolver {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ParquetFileReaderFactoryResolver")
+            .finish_non_exhaustive()
+    }
 }
 
 /// Typed error returned when the custom-reader-only profile has no injected reader.

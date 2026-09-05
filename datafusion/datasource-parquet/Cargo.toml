@@ -94,11 +94,19 @@ compression = [
     "parquet/snap",
     "parquet/zstd",
 ]
-disk = ["datafusion-execution/disk"]
-object-store-reader = ["parquet/async"]
+disk = ["datafusion-datasource/disk", "datafusion-execution/disk"]
+object-store-reader = ["parquet-read", "parquet/async"]
+# The exact browser overlay supplies Parquet's candidate-only `async-core`
+# feature. It cannot be named here because crates.io Parquet 59.3.0 does not
+# publish that feature; `parquet/async` would reintroduce Tokio on WASM.
 parquet-read = ["parquet/arrow"]
-parquet-write = ["datafusion-datasource/writes", "parquet/async"]
+parquet-write = [
+    "datafusion-datasource/writes",
+    "parquet/arrow",
+    "parquet/async",
+]
 proto = [
+    "parquet-read",
     "dep:datafusion-proto-models",
     "datafusion-datasource/proto",
     "datafusion-physical-plan/proto",

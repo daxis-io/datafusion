@@ -28,7 +28,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures::stream::{BoxStream, Stream};
 use futures::{StreamExt, TryFutureExt};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "disk"))]
 use object_store::GetResultPayload;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
@@ -97,7 +97,7 @@ async fn get_stream(
     };
     let result = store.get_opts(&location, opts).await?;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "disk"))]
     if let GetResultPayload::File(mut file, _path) = result.payload {
         use std::io::{Read, Seek, SeekFrom};
         const CHUNK_SIZE: u64 = 8 * 1024;

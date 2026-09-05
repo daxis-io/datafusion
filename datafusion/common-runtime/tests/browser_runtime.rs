@@ -201,6 +201,38 @@ async fn bounded_channel_preserves_waiter_order_and_reports_receiver_closure() {
 }
 
 #[wasm_bindgen_test]
+async fn bounded_channel_close_wakes_blocked_senders_before_buffer_drain() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender.try_send(0).expect("initial credit");
+
+    let first_sender = sender.clone();
+    let first = SpawnedTask::spawn_local(async move { first_sender.send(1).await });
+    let second_sender = sender.clone();
+    let second = SpawnedTask::spawn_local(async move { second_sender.send(2).await });
+    yield_now().await;
+
+    receiver.close();
+
+    let first_error = first
+        .await
+        .expect("blocked sender task must complete when the receiver closes")
+        .expect_err("closed receiver must reject the first blocked send");
+    let second_error = second
+        .await
+        .expect("blocked sender task must complete when the receiver closes")
+        .expect_err("closed receiver must reject the second blocked send");
+    assert_eq!(first_error.into_inner(), 1);
+    assert_eq!(second_error.into_inner(), 2);
+
+    assert_eq!(
+        receiver.recv().await,
+        Some(0),
+        "closure must wake blocked sends without consuming the buffered value"
+    );
+    assert_eq!(receiver.recv().await, None);
+}
+
+#[wasm_bindgen_test]
 async fn receivers_report_close_before_eof_and_drain_buffered_values() {
     let (sender, mut receiver) = mpsc::channel(2);
     sender.try_send(1).expect("receiver is open");

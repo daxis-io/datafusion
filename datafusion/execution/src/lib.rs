@@ -30,10 +30,16 @@
 mod async_stream;
 pub mod cache;
 pub mod config;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    not(feature = "disk")
+))]
 #[path = "browser_disk_manager.rs"]
 pub mod disk_manager;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    feature = "disk"
+))]
 pub mod disk_manager;
 pub mod memory_pool;
 pub mod object_store;

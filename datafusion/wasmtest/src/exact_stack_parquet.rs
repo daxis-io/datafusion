@@ -64,7 +64,19 @@ const CHECKSUMMED_ZSTD_FRAME: &[u8] = &[
 struct ReadTracker {
     factory_calls: AtomicUsize,
     ranges: Mutex<Vec<(Range<u64>, String)>>,
+    read_started: AtomicBool,
+    read_dropped: AtomicBool,
     late_publication: AtomicBool,
+}
+
+struct ActiveRead {
+    tracker: Arc<ReadTracker>,
+}
+
+impl Drop for ActiveRead {
+    fn drop(&mut self) {
+        self.tracker.read_dropped.store(true, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug)]
@@ -126,6 +138,10 @@ impl AsyncFileReader for TrackingAsyncReader {
         let tracker = Arc::clone(&self.tracker);
         let delay_turns = self.delay_turns;
         async move {
+            tracker.read_started.store(true, Ordering::SeqCst);
+            let _active_read = ActiveRead {
+                tracker: Arc::clone(&tracker),
+            };
             for _ in 0..delay_turns {
                 yield_now().await;
             }
@@ -356,10 +372,16 @@ async fn prove_truncated_footer() -> Result<()> {
     )
     .await
     .expect_err("truncated footer must fail");
-    if !error_chain_contains(&error, "footer") && !error_chain_contains(&error, "parquet")
-    {
+    let Some(ParquetError::General(message)) =
+        error_chain_downcast::<ParquetError>(&error)
+    else {
         return Err(DataFusionError::Execution(format!(
-            "truncated footer returned an unclassified error: {error}"
+            "truncated footer did not preserve a ParquetError::General source: {error}"
+        )));
+    };
+    if message != "Invalid Parquet file. Corrupt footer" {
+        return Err(DataFusionError::Execution(format!(
+            "truncated footer returned the wrong decode-stage error: {error}"
         )));
     }
     Ok(())
@@ -430,14 +452,19 @@ async fn prove_factory_is_required() -> Result<()> {
     let error = datafusion::physical_plan::collect(plan, ctx.task_ctx())
         .await
         .expect_err("custom-reader-only source must require an injected factory");
-    if !error_chain_contains(&error, "ParquetFileReaderFactory must be injected")
-        || !error_chain_contains(&error, "object-store-reader")
+    let Some(required) = error_chain_downcast::<ParquetFileReaderFactoryRequired>(&error)
+    else {
+        return Err(DataFusionError::Execution(format!(
+            "missing factory did not preserve ParquetFileReaderFactoryRequired: {error}"
+        )));
+    };
+    if required.profile() != "custom-reader-only"
+        || required.capability() != "object-store-reader"
     {
         return Err(DataFusionError::Execution(format!(
-            "missing factory did not return its structured capability error: {error}"
+            "missing factory returned the wrong structured fields: {error}"
         )));
     }
-    let _type_identity = std::any::TypeId::of::<ParquetFileReaderFactoryRequired>();
     Ok(())
 }
 
@@ -460,15 +487,40 @@ async fn prove_delayed_read_cancellation() -> Result<()> {
     let task = SpawnedTask::spawn_local(future);
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     let task = SpawnedTask::spawn(future);
-    yield_now().await;
+    for _ in 0..8 {
+        if tracker.read_started.load(Ordering::SeqCst) {
+            break;
+        }
+        yield_now().await;
+    }
+    if !tracker.read_started.load(Ordering::SeqCst) {
+        return Err(DataFusionError::Execution(
+            "delayed Parquet read was cancelled before it started".into(),
+        ));
+    }
     drop(task);
     for _ in 0..4 {
         yield_now().await;
     }
-    if tracker.late_publication.load(Ordering::SeqCst) {
-        return Err(DataFusionError::Execution(
-            "cancelled delayed Parquet read published a late result".into(),
-        ));
+    if !tracker.read_dropped.load(Ordering::SeqCst)
+        || tracker.late_publication.load(Ordering::SeqCst)
+        || !tracker
+            .ranges
+            .lock()
+            .expect("range tracker mutex poisoned")
+            .is_empty()
+    {
+        return Err(DataFusionError::Execution(format!(
+            "cancelled delayed Parquet read violated drop semantics: started={}, dropped={}, late={}, ranges={}",
+            tracker.read_started.load(Ordering::SeqCst),
+            tracker.read_dropped.load(Ordering::SeqCst),
+            tracker.late_publication.load(Ordering::SeqCst),
+            tracker
+                .ranges
+                .lock()
+                .expect("range tracker mutex poisoned")
+                .len(),
+        )));
     }
     Ok(())
 }
@@ -500,4 +552,17 @@ fn error_chain_contains(error: &(dyn std::error::Error + 'static), needle: &str)
         current = error.source();
     }
     false
+}
+
+fn error_chain_downcast<'a, T: std::error::Error + 'static>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a T> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<T>() {
+            return Some(error);
+        }
+        current = error.source();
+    }
+    None
 }

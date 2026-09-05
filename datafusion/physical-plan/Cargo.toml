@@ -49,6 +49,7 @@ runtime-tokio = [
     "datafusion-common-runtime/runtime-tokio",
     "datafusion-execution/runtime-tokio",
     "datafusion-physical-expr/runtime-tokio",
+    "tokio/time",
 ]
 spill = ["arrow-ipc/lz4", "arrow-ipc/zstd", "datafusion-execution/spill"]
 test_utils = ["arrow/test_utils"]

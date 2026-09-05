@@ -1126,11 +1126,16 @@ impl ParquetSource {
         node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
         ctx: &datafusion_physical_plan::proto::ExecutionPlanDecodeCtx<'_>,
     ) -> datafusion_common::Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        #[cfg(feature = "object-store-reader")]
         use crate::CachedParquetFileReaderFactory;
+        #[cfg(not(feature = "object-store-reader"))]
+        use crate::ParquetFileReaderFactoryRequired;
+        use crate::ParquetFileReaderFactoryResolver;
         use arrow::datatypes::Schema;
         use datafusion_common::config::TableParquetOptions;
         use datafusion_datasource::file_scan_config::FileScanConfig;
         use datafusion_datasource::source::DataSourceExec;
+        #[cfg(feature = "object-store-reader")]
         use datafusion_execution::object_store::ObjectStoreUrl;
         use datafusion_proto_models::protobuf;
 
@@ -1189,21 +1194,35 @@ impl ParquetSource {
         }
 
         let table_schema = FileScanConfig::parse_table_schema_from_proto(base_conf)?;
-        let object_store_url = match base_conf.object_store_url.is_empty() {
-            false => ObjectStoreUrl::parse(&base_conf.object_store_url)?,
-            true => ObjectStoreUrl::local_filesystem(),
-        };
-        let store = ctx
-            .task_ctx()
-            .runtime_env()
-            .object_store(object_store_url)?;
-        let metadata_cache = ctx
-            .task_ctx()
-            .runtime_env()
-            .cache_manager
-            .get_file_metadata_cache();
         let reader_factory =
-            Arc::new(CachedParquetFileReaderFactory::new(store, metadata_cache));
+            if let Some(resolver) = ctx.extension::<ParquetFileReaderFactoryResolver>() {
+                resolver.resolve()
+            } else {
+                #[cfg(feature = "object-store-reader")]
+                {
+                    let object_store_url = match base_conf.object_store_url.is_empty() {
+                        false => ObjectStoreUrl::parse(&base_conf.object_store_url)?,
+                        true => ObjectStoreUrl::local_filesystem(),
+                    };
+                    let store = ctx
+                        .task_ctx()
+                        .runtime_env()
+                        .object_store(object_store_url)?;
+                    let metadata_cache = ctx
+                        .task_ctx()
+                        .runtime_env()
+                        .cache_manager
+                        .get_file_metadata_cache();
+                    Arc::new(CachedParquetFileReaderFactory::new(store, metadata_cache))
+                        as Arc<dyn ParquetFileReaderFactory>
+                }
+                #[cfg(not(feature = "object-store-reader"))]
+                {
+                    return Err(DataFusionError::External(Box::new(
+                        ParquetFileReaderFactoryRequired::new(),
+                    )));
+                }
+            };
 
         let mut source = ParquetSource::new(table_schema)
             .with_parquet_file_reader_factory(reader_factory)

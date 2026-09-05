@@ -54,19 +54,40 @@ use datafusion_common::config::TableParquetOptions;
 use datafusion_common::stats::Precision;
 use datafusion_common::{DataFusionError, Result, internal_datafusion_err, internal_err};
 use datafusion_datasource::{TableSchema, TableSchemaBuilder};
+use datafusion_datasource_parquet::{
+    ParquetFileReaderFactory, ParquetFileReaderFactoryResolver,
+};
 use datafusion_expr::ColumnarValue;
 use datafusion_physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion_physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
+use datafusion_physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_proto::physical_plan::{
     AsExecutionPlan, DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
-    PhysicalExtensionCodec, PhysicalProtoConverterExtension,
+    PhysicalExtensionCodec, PhysicalPlanDecodeContext, PhysicalPlanNodeExt,
+    PhysicalProtoConverterExtension,
 };
 use datafusion_proto::protobuf::PhysicalPlanNode;
+use parquet::arrow::async_reader::AsyncFileReader;
 use prost::Message;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::vec;
+
+#[derive(Debug)]
+struct InjectedParquetReaderFactory;
+
+impl ParquetFileReaderFactory for InjectedParquetReaderFactory {
+    fn create_reader(
+        &self,
+        _partition_index: usize,
+        _partitioned_file: PartitionedFile,
+        _metadata_size_hint: Option<usize>,
+        _metrics: &ExecutionPlanMetricsSet,
+    ) -> Result<Box<dyn AsyncFileReader + Send>> {
+        unreachable!("the decode contract does not execute the injected reader")
+    }
+}
 
 #[test]
 fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
@@ -152,6 +173,63 @@ fn roundtrip_parquet_exec_attaches_cached_reader_factory_after_roundtrip() -> Re
     assert!(
         parquet_source.parquet_file_reader_factory().is_some(),
         "Parquet reader factory should be attached after decoding from protobuf"
+    );
+    Ok(())
+}
+
+#[test]
+fn roundtrip_parquet_exec_prefers_injected_reader_factory() -> Result<()> {
+    let file_schema =
+        Arc::new(Schema::new(vec![Field::new("col", DataType::Utf8, false)]));
+    let file_source = Arc::new(ParquetSource::new(Arc::clone(&file_schema)));
+    let scan_config =
+        FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), file_source)
+            .with_file_groups(vec![FileGroup::new(vec![PartitionedFile::new(
+                "/path/to/file.parquet".to_string(),
+                1024,
+            )])])
+            .with_statistics(Statistics {
+                num_rows: Precision::Inexact(100),
+                total_byte_size: Precision::Inexact(1024),
+                column_statistics: Statistics::unknown_column(&file_schema),
+            })
+            .build();
+    let exec_plan = DataSourceExec::from_data_source(scan_config);
+
+    let codec = DefaultPhysicalExtensionCodec {};
+    let converter = DefaultPhysicalProtoConverter {};
+    let proto = PhysicalPlanNode::try_from_physical_plan_with_converter(
+        exec_plan, &codec, &converter,
+    )?;
+    let wire = proto.encode_to_vec();
+    let proto = PhysicalPlanNode::try_decode(wire.as_slice())?;
+
+    let session = SessionContext::new();
+    let task_ctx = session.task_ctx();
+    let factory: Arc<dyn ParquetFileReaderFactory> =
+        Arc::new(InjectedParquetReaderFactory);
+    let decode_ctx = PhysicalPlanDecodeContext::new(task_ctx.as_ref(), &codec)
+        .with_extension(ParquetFileReaderFactoryResolver::new(Arc::clone(&factory)));
+    let roundtripped =
+        proto.try_into_physical_plan_with_context(&decode_ctx, &converter)?;
+
+    let data_source = roundtripped
+        .downcast_ref::<DataSourceExec>()
+        .ok_or_else(|| internal_datafusion_err!("Expected DataSourceExec"))?;
+    let file_scan = data_source
+        .data_source()
+        .downcast_ref::<FileScanConfig>()
+        .ok_or_else(|| internal_datafusion_err!("Expected FileScanConfig"))?;
+    let parquet_source = file_scan
+        .file_source()
+        .downcast_ref::<ParquetSource>()
+        .ok_or_else(|| internal_datafusion_err!("Expected ParquetSource"))?;
+    let decoded_factory = parquet_source
+        .parquet_file_reader_factory()
+        .ok_or_else(|| internal_datafusion_err!("Expected injected reader factory"))?;
+    assert!(
+        Arc::ptr_eq(&factory, decoded_factory),
+        "protobuf decode must retain the caller-injected factory"
     );
     Ok(())
 }

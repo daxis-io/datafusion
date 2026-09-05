@@ -58,6 +58,7 @@
 //!
 //! [`ExecutionPlan`]: crate::ExecutionPlan
 
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -138,6 +139,11 @@ pub trait ExecutionPlanDecode {
     /// The session task context, used by plans that need the function registry
     /// or session configuration. Never exposes the proto extension codec.
     fn task_ctx(&self) -> &TaskContext;
+
+    /// Return a caller-provided, type-erased decode extension.
+    fn extension(&self, _type_id: TypeId) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
+    }
 
     /// Reconstruct a scalar UDF from its name and optional payload. Encapsulates
     /// the lookup-order policy (payload → codec; else registry → codec fallback)
@@ -312,6 +318,14 @@ impl<'a> ExecutionPlanDecodeCtx<'a> {
     /// exposes the proto extension codec.
     pub fn task_ctx(&self) -> &TaskContext {
         self.decoder.task_ctx()
+    }
+
+    /// Return a caller-provided decode extension of type `T`, if present.
+    pub fn extension<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.decoder
+            .extension(TypeId::of::<T>())?
+            .downcast::<T>()
+            .ok()
     }
 
     /// Reconstruct a scalar UDF from its name and optional payload. The

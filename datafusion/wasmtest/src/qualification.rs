@@ -288,6 +288,42 @@ async fn prove_bounded_channel() -> Result<()> {
             "bounded sender did not observe receiver closure".into(),
         ));
     }
+
+    let (sender, mut receiver) = mpsc::channel(1);
+    sender.try_send(0).map_err(external)?;
+    let first_sender = sender.clone();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let first = SpawnedTask::spawn_local(async move { first_sender.send(1).await });
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let first = SpawnedTask::spawn(async move { first_sender.send(1).await });
+    let second_sender = sender.clone();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let second = SpawnedTask::spawn_local(async move { second_sender.send(2).await });
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let second = SpawnedTask::spawn(async move { second_sender.send(2).await });
+    yield_now().await;
+    receiver.close();
+    let first_error = first
+        .await
+        .map_err(external)?
+        .expect_err("closed receiver must reject the first blocked send");
+    let second_error = second
+        .await
+        .map_err(external)?
+        .expect_err("closed receiver must reject the second blocked send");
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let first_value = first_error.into_inner();
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let first_value = first_error.0;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let second_value = second_error.into_inner();
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let second_value = second_error.0;
+    if first_value != 1 || second_value != 2 || receiver.recv().await != Some(0) {
+        return Err(DataFusionError::Execution(
+            "receiver close did not wake blocked senders before buffer drain".into(),
+        ));
+    }
     Ok(())
 }
 

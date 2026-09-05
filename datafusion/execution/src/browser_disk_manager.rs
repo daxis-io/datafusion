@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Browser profile for [`DiskManager`].
+//! Disk-disabled profile for [`DiskManager`].
 
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -23,17 +23,30 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::spill_file::{SpillFile, TempFileFactory};
-use datafusion_common::error::{RuntimeCapability, UnsupportedRuntimeCapability};
+use datafusion_common::error::RuntimeCapability;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use datafusion_common::error::UnsupportedRuntimeCapability;
 use datafusion_common::{DataFusionError, Result};
 
 pub const DEFAULT_MAX_TEMP_DIRECTORY_SIZE: u64 = 100 * 1024 * 1024 * 1024;
 pub const DEFAULT_MAX_SPILL_MERGE_FAN_IN: usize = 0;
 
 fn unsupported(capability: RuntimeCapability) -> DataFusionError {
-    DataFusionError::External(Box::new(UnsupportedRuntimeCapability::browser(capability)))
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        DataFusionError::External(Box::new(UnsupportedRuntimeCapability::browser(
+            capability,
+        )))
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        DataFusionError::ResourcesExhausted(format!(
+            "runtime was compiled without the {capability} capability"
+        ))
+    }
 }
 
-/// Builder for the browser-disabled disk manager.
+/// Builder for a compile-time-disabled disk manager.
 #[derive(Clone, Debug)]
 pub struct DiskManagerBuilder {
     mode: DiskManagerMode,
@@ -124,7 +137,7 @@ impl Debug for DiskManagerMode {
     }
 }
 
-/// Browser disk manager. It never owns or allocates host paths.
+/// Disk-disabled manager. It never owns or allocates host paths.
 pub struct DiskManager {
     max_temp_directory_size: AtomicU64,
     max_spill_merge_fan_in: AtomicUsize,

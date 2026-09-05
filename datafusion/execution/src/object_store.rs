@@ -24,7 +24,7 @@ use datafusion_common::{
     DataFusionError, Result, exec_err, internal_datafusion_err, not_impl_err,
 };
 use object_store::ObjectStore;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "disk"))]
 use object_store::local::LocalFileSystem;
 use std::sync::Arc;
 use url::Url;
@@ -205,16 +205,16 @@ impl Default for DefaultObjectStoreRegistry {
 }
 
 impl DefaultObjectStoreRegistry {
-    /// This will register [`LocalFileSystem`] to handle `file://` paths
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Create a registry with the local filesystem registered for `file://` paths.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "disk"))]
     pub fn new() -> Self {
         let object_stores: DashMap<String, Arc<dyn ObjectStore>> = DashMap::new();
         object_stores.insert("file://".to_string(), Arc::new(LocalFileSystem::new()));
         Self { object_stores }
     }
 
-    /// Default without any backend registered.
-    #[cfg(target_arch = "wasm32")]
+    /// Create a registry without a host filesystem backend.
+    #[cfg(any(target_arch = "wasm32", not(feature = "disk")))]
     pub fn new() -> Self {
         let object_stores: DashMap<String, Arc<dyn ObjectStore>> = DashMap::new();
         Self { object_stores }
