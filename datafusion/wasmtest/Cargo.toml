@@ -72,7 +72,8 @@ wasm-bindgen = "=0.2.118"
 wasm-bindgen-futures = "=0.4.68"
 
 [package.metadata.cargo-machete]
-ignored = ["getrandom", "wasm-bindgen-futures"]
+# datafusion-execution restores native capabilities for workspace test builds.
+ignored = ["datafusion-execution", "getrandom", "wasm-bindgen-futures"]
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 datafusion-execution = { workspace = true, features = [

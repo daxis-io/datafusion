@@ -527,14 +527,9 @@ async fn test_cli() {
         return;
     }
 
-    let container = match setup_minio_container().await {
-        Ok(c) => c,
-        Err(e) if e.contains("toomanyrequests") => {
-            eprintln!("Skipping test: Docker pull rate limit reached: {e}");
-            return;
-        }
-        e @ Err(_) => e.unwrap(),
-    };
+    let container = setup_minio_container()
+        .await
+        .expect("Enabled storage integration tests require MinIO");
 
     let settings = make_settings();
     let _bound = settings.bind_to_scope();
@@ -567,14 +562,9 @@ async fn test_aws_options() {
     let settings = make_settings();
     let _bound = settings.bind_to_scope();
 
-    let container = match setup_minio_container().await {
-        Ok(c) => c,
-        Err(e) if e.contains("toomanyrequests") => {
-            eprintln!("Skipping test: Docker pull rate limit reached: {e}");
-            return;
-        }
-        e @ Err(_) => e.unwrap(),
-    };
+    let container = setup_minio_container()
+        .await
+        .expect("Enabled storage integration tests require MinIO");
     let port = container.get_host_port_ipv4(9000).await.unwrap();
 
     let input = format!(
@@ -663,14 +653,9 @@ async fn test_s3_url_fallback() {
         return;
     }
 
-    let container = match setup_minio_container().await {
-        Ok(c) => c,
-        Err(e) if e.contains("toomanyrequests") => {
-            eprintln!("Skipping test: Docker pull rate limit reached: {e}");
-            return;
-        }
-        e @ Err(_) => e.unwrap(),
-    };
+    let container = setup_minio_container()
+        .await
+        .expect("Enabled storage integration tests require MinIO");
 
     let mut settings = make_settings();
     settings.set_snapshot_suffix("s3_url_fallback");
@@ -700,14 +685,9 @@ async fn test_object_store_profiling() {
         return;
     }
 
-    let container = match setup_minio_container().await {
-        Ok(c) => c,
-        Err(e) if e.contains("toomanyrequests") => {
-            eprintln!("Skipping test: Docker pull rate limit reached: {e}");
-            return;
-        }
-        e @ Err(_) => e.unwrap(),
-    };
+    let container = setup_minio_container()
+        .await
+        .expect("Enabled storage integration tests require MinIO");
     let mut settings = make_settings();
 
     // as the object store profiling contains timestamps and durations, we must

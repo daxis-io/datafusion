@@ -53,6 +53,10 @@ datafusion-session = { workspace = true }
 futures = { workspace = true }
 object_store = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native readers handle GetResultPayload::File directly.
+object_store = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 
 # Note: add additional linter rules in lib.rs.

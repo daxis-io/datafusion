@@ -58,7 +58,7 @@ runtime-tokio = [
     "datafusion-session/runtime-tokio",
 ]
 temp-path = ["dep:tempfile"]
-writes = ["dep:rand"]
+writes = ["dep:rand", "object_store/tokio", "tokio/io-util"]
 
 [dependencies]
 arrow = { workspace = true }

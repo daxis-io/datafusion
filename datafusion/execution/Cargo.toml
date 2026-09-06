@@ -56,6 +56,10 @@ spill = ["disk"]
 sql = []
 temp-path = ["disk"]
 
+[package.metadata.cargo-machete]
+# Forward runtime selection to users of the shared runtime facade.
+ignored = ["datafusion-common-runtime"]
+
 [dependencies]
 arrow = { workspace = true }
 arrow-buffer = { workspace = true }

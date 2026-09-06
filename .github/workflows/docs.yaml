@@ -28,6 +28,8 @@ name: Deploy DataFusion site
 
 jobs:
   build-docs:
+    # The asf-site branch publishes the Apache website, not fork documentation.
+    if: github.repository == 'apache/datafusion'
     permissions:
       contents: write
     name: Build docs

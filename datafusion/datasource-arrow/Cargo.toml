@@ -49,6 +49,12 @@ itertools = { workspace = true }
 object_store = { workspace = true }
 tokio = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# ArrowFormat includes native sink support.
+datafusion-datasource = { workspace = true, features = ["writes"] }
+# Native readers handle GetResultPayload::File directly.
+object_store = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 chrono = { workspace = true }
 

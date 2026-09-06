@@ -75,7 +75,7 @@ stabby = "72.1.2"
 tokio = { workspace = true }
 
 [dev-dependencies]
-datafusion = { workspace = true, default-features = false, features = ["sql"] }
+datafusion = { workspace = true, default-features = false, features = ["catalog-stream", "csv", "sql"] }
 datafusion-functions = { workspace = true }
 datafusion-functions-aggregate = { workspace = true }
 datafusion-functions-aggregate-common = { workspace = true }

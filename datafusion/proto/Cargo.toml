@@ -50,6 +50,7 @@ json = [
 ]
 parquet = [
     "datafusion-datasource-parquet",
+    "datafusion-datasource-parquet/object-store-reader",
     "datafusion-datasource-parquet/parquet-write",
     "datafusion-common/parquet",
     "datafusion/parquet",
@@ -87,6 +88,12 @@ serde_json = { workspace = true, optional = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 datafusion = { workspace = true, default-features = false, features = [
+    "arrow",
+    "catalog-stream",
+    "csv",
+    "json",
+    "runtime-tokio",
+    "writes",
     "sql",
     "datetime_expressions",
     "nested_expressions",

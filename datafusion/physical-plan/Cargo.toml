@@ -102,10 +102,15 @@ pin-project-lite = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
-tokio = { workspace = true }
+# Public native test helpers use timers even without the runtime-tokio feature.
+tokio = { workspace = true, features = ["time"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[package.metadata.cargo-machete]
+# Select the browser entropy backend for transitive users.
+ignored = ["getrandom"]
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
 arrow-data = { workspace = true }

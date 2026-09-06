@@ -245,7 +245,8 @@ test-utils = { path = "../../test-utils" }
 tokio = { workspace = true, features = ["rt-multi-thread", "parking_lot", "fs"] }
 
 [package.metadata.cargo-machete]
-ignored = ["datafusion-doc", "datafusion-macros", "dashmap"]
+# getrandom selects the browser entropy backend for transitive users.
+ignored = ["datafusion-doc", "datafusion-macros", "dashmap", "getrandom"]
 
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 nix = { version = "0.31.3", features = ["fs"] }

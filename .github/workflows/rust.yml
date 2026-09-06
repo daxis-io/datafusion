@@ -212,6 +212,16 @@ jobs:
       #
       - name: Check datafusion (no-default-features)
         run: cargo check --profile ci --no-default-features -p datafusion
+      - name: Check datasource writes (no-default-features)
+        run: cargo check --profile ci --no-default-features -p datafusion-datasource --features=writes
+      - name: Check Arrow datasource (no-default-features)
+        run: cargo check --profile ci --no-default-features -p datafusion-datasource-arrow
+      - name: Check CSV datasource (no-default-features)
+        run: cargo check --profile ci --no-default-features -p datafusion-datasource-csv
+      - name: Check JSON datasource (no-default-features)
+        run: cargo check --profile ci --no-default-features -p datafusion-datasource-json
+      - name: Check Avro datasource (no-default-features)
+        run: cargo check --profile ci --no-default-features -p datafusion-datasource-avro
       - name: Check datafusion (nested_expressions)
         run: cargo check --profile ci --no-default-features -p datafusion --features=nested_expressions
       - name: Check datafusion (array_expressions)
