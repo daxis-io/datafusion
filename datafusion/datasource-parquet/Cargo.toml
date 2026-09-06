@@ -57,6 +57,7 @@ parking_lot = { workspace = true }
 parquet = { workspace = true }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+parquet = { workspace = true, features = ["async"] }
 tokio = { workspace = true }
 
 [dev-dependencies]

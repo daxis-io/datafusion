@@ -19,7 +19,7 @@ import { expect, test } from "@playwright/test";
 
 test.skip(
   process.env.DATAFUSION_EXACT_STACK !== "1",
-  "requires the ignored exact-stack overlay build",
+  "requires the ignored exact-stack overlay build"
 );
 test.setTimeout(300_000);
 
@@ -27,9 +27,9 @@ test("qualifies custom Parquet reads from the exact local stack", async ({
   page,
 }) => {
   page.on("console", (message) => console.log(`browser:${message.text()}`));
-  await page.goto("/");
-  await page.addScriptTag({ type: "module", url: "/exact-qualification.js" });
-  await page.waitForFunction(() => Boolean(window.runExactStackQualification));
+  await page.goto("/?profile=exact");
+  await page.evaluate(() => window.wasmReady);
+  expect(await page.evaluate(() => window.qualificationProfile)).toBe("exact");
   const result = await page.evaluate(() => window.runExactStackQualification());
   expect(result).toContain("uncompressed_ranges=");
   expect(result).toContain("zstd_ranges=");

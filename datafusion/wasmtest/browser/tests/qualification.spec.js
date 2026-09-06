@@ -21,7 +21,11 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+  const profile =
+    process.env.DATAFUSION_EXACT_STACK === "1" ? "exact" : "ordinary";
+  await page.goto(`/?profile=${profile}`);
+  await page.evaluate(() => window.wasmReady);
+  expect(await page.evaluate(() => window.qualificationProfile)).toBe(profile);
 });
 
 test("instantiates the generated WebAssembly module", async ({ page }) => {
@@ -33,7 +37,9 @@ test("instantiates the generated WebAssembly module", async ({ page }) => {
 });
 
 test("parses the committed Axon fixtures", async ({ page }) => {
-  const result = await page.evaluate(() => window.runFixtureParseQualification());
+  const result = await page.evaluate(() =>
+    window.runFixtureParseQualification()
+  );
   expect(result).toBe("rows=6,4,3");
 });
 
@@ -66,7 +72,9 @@ test("executes the Axon corpus and runtime contracts", async ({ page }) => {
 });
 
 test("execution cooperates after each 128-item budget", async ({ page }) => {
-  const result = await page.evaluate(() => window.runCooperationQualification());
+  const result = await page.evaluate(() =>
+    window.runCooperationQualification()
+  );
   expect(result.value).toBe(257);
   expect(result.heartbeats).toBeGreaterThan(0);
 });

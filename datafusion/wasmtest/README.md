@@ -109,3 +109,20 @@ The following DataFusion crates are verified to work in a wasm-pack environment 
 - `datafusion-common-runtime`
 
 The `datafusion-ffi` crate cannot compile for the wasm32-unknown-unknown target because it relies on lzma-sys, which depends on native C libraries (liblzma). The wasm32-unknown-unknown target lacks a standard C library (stdlib.h) and POSIX-like environment, preventing the native code from being compiled.
+
+## Frozen-stack browser qualification
+
+The `browser` harness selects one WASM artifact for the entire test page.
+`?profile=ordinary` loads the committed registry-compatible `browser,sql`
+artifact; `?profile=exact` loads the frozen overlay artifact, including browser
+Parquet with unpublished `async-core,zstd`. The selected artifact is checked
+before every qualification test. Both artifacts use the same fixture, SQL,
+runtime, planning-heartbeat, and cooperation tests.
+
+After building and transforming both artifacts, run each browser sequentially
+from `browser` with `npm run test:chromium`, `npm run test:firefox`, and
+`npm run test:webkit`. Run the exact artifact with `npm run test:exact:chromium`,
+`npm run test:exact:firefox`, and `npm run test:exact:webkit`. Every command runs
+the full project suite with one worker and no retries. Ordinary runs have eight
+passing tests and one documented exact-only skip; exact runs have nine passing
+tests and no skips. Standalone registry browser Parquet is deferred from Phase B.

@@ -15,10 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import init, * as wasm from "./pkg/datafusion_wasmtest.js";
-
-const ready = init();
-window.wasmReady = ready;
+let wasm;
+window.wasmReady = (async () => {
+  const profile =
+    new URLSearchParams(window.location.search).get("profile") ?? "ordinary";
+  if (profile !== "ordinary" && profile !== "exact") {
+    throw new Error(`Unknown qualification profile: ${profile}`);
+  }
+  wasm = await import(
+    profile === "exact"
+      ? "./pkg/datafusion_browser_exact_stack.js"
+      : "./pkg/datafusion_wasmtest.js"
+  );
+  await wasm.default();
+  // Report the loaded artifact's export, so a wrong module cannot pass merely
+  // by echoing the requested profile.
+  window.qualificationProfile = wasm.qualify_exact_stack ? "exact" : "ordinary";
+})();
+const ready = window.wasmReady;
 
 async function withHeartbeat(operation) {
   let heartbeats = 0;
@@ -88,4 +102,9 @@ window.runExecutionQualification = async () => {
 window.runCooperationQualification = async () => {
   await ready;
   return withHeartbeat(() => wasm.qualify_cooperation());
+};
+
+window.runExactStackQualification = async () => {
+  await ready;
+  return wasm.qualify_exact_stack();
 };

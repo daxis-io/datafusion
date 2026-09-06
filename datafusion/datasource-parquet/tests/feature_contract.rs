@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(not(feature = "object-store-reader"))]
+#[cfg(all(feature = "parquet-read", not(feature = "object-store-reader")))]
 #[test]
 fn parquet_read_requires_an_injected_factory_without_default_reader() {
     use arrow::datatypes::Schema;

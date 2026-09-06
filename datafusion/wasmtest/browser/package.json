@@ -11,9 +11,9 @@
   "scripts": {
     "test": "playwright test",
     "test:chromium": "playwright test --project=chromium",
-    "test:exact:chromium": "DATAFUSION_EXACT_STACK=1 playwright test --project=chromium tests/exact-stack.spec.js",
-    "test:exact:firefox": "DATAFUSION_EXACT_STACK=1 playwright test --project=firefox tests/exact-stack.spec.js",
-    "test:exact:webkit": "DATAFUSION_EXACT_STACK=1 playwright test --project=webkit tests/exact-stack.spec.js",
+    "test:exact:chromium": "DATAFUSION_EXACT_STACK=1 playwright test --project=chromium",
+    "test:exact:firefox": "DATAFUSION_EXACT_STACK=1 playwright test --project=firefox",
+    "test:exact:webkit": "DATAFUSION_EXACT_STACK=1 playwright test --project=webkit",
     "test:firefox": "playwright test --project=firefox",
     "test:webkit": "playwright test --project=webkit"
   },

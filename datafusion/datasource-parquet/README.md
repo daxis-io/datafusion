@@ -31,3 +31,27 @@ reason to use this crate directly in your project as well.
 [apache datafusion]: https://datafusion.apache.org/
 [apache parquet]: https://parquet.apache.org/
 [`datafusion`]: https://crates.io/crates/datafusion
+
+## Reader features
+
+With defaults disabled, native callers can enable `parquet-read,runtime-tokio`
+to inject a `ParquetFileReaderFactory`. Adding `proto` also supports protobuf
+plan decoding with a custom reader resolver. Neither profile requires callers
+to enable Parquet dependency features themselves. The native target dependency
+activates registry Parquet's `async` APIs.
+
+`parquet-read` exposes reader and source APIs. `object-store-reader` separately
+exposes the default reader; without it a missing injected factory returns the
+typed `ParquetFileReaderFactoryRequired` error. Writer APIs require
+`parquet-write`.
+
+The committed `datafusion` browser profile (`browser,sql`) uses registry-valid
+manifests. Browser Parquet requires the frozen local Arrow/Parquet overlay,
+which provides the unpublished `async-core,zstd` features. Standalone registry
+browser Parquet is deferred from Phase B qualification. Cargo resolver 2 keeps
+the native target's `async` activation out of the browser dependency graph.
+
+Run `python3 ci/scripts/check_parquet_feature_contract.py` from the repository
+root to check the standalone native profiles, typed missing-factory behavior,
+and downstream reader/default-reader API visibility. Each Cargo invocation
+selects only its advertised profile, without overlay feature unification.
