@@ -170,8 +170,13 @@ impl<T: 'static> JoinSet<T> {
         }
     }
 
-    /// Detach all tasks so dropping the set does not cancel them.
+    /// Detach all tasks, discarding their results without cancelling them.
     pub fn detach_all(&mut self) {
+        // Detached tasks retain the old senders, so late outputs cannot enter
+        // the reused set. Dropping the old receiver also releases queued outputs.
+        let (sender, receiver) = mpsc::unbounded();
+        self.sender = sender;
+        self.receiver = receiver;
         self.aborts.clear();
     }
 

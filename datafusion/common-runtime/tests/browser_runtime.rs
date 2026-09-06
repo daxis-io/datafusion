@@ -356,3 +356,94 @@ async fn notify_retains_one_permit_and_watch_serves_late_subscribers() {
     drop(sender);
     assert!(first.changed().await.is_err());
 }
+
+#[wasm_bindgen_test]
+async fn join_set_detach_does_not_return_stale_results_after_reuse() {
+    for mode in 0..3 {
+        let mut set = JoinSet::new();
+        set.spawn_local(async { 1 });
+        yield_now().await;
+        set.detach_all();
+        assert!(set.is_empty());
+        set.spawn_local(async { 2 });
+        yield_now().await;
+        let result = match mode {
+            0 => set.join_next().await,
+            1 => set.try_join_next(),
+            _ => futures::future::poll_fn(|cx| set.poll_join_next(cx)).await,
+        };
+        assert_eq!(
+            result.unwrap().unwrap(),
+            2,
+            "detached results must not be joined"
+        );
+        assert!(set.is_empty());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn join_set_detach_releases_completed_and_late_outputs() {
+    struct Output(Rc<Cell<usize>>);
+    impl Drop for Output {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let dropped = Rc::new(Cell::new(0));
+    let task_dropped = Rc::clone(&dropped);
+    let mut set = JoinSet::new();
+    let completed = set.spawn_local(async move { Output(task_dropped) });
+    yield_now().await;
+    assert!(completed.is_finished());
+    assert_eq!(dropped.get(), 0);
+    set.detach_all();
+    assert_eq!(dropped.get(), 1, "detach must release queued outputs");
+
+    let task_dropped = Rc::clone(&dropped);
+    let (release_tx, release_rx) = oneshot::channel();
+    let detached = set.spawn_local(async move {
+        release_rx.await.expect("detached task must continue");
+        Output(task_dropped)
+    });
+    yield_now().await;
+    set.detach_all();
+    assert!(!detached.is_finished());
+    release_tx
+        .send(())
+        .expect("detach must not cancel the task");
+    yield_now().await;
+    assert!(detached.is_finished());
+    assert_eq!(
+        dropped.get(),
+        2,
+        "late detached output must not be retained"
+    );
+    assert!(set.join_next().await.is_none());
+}
+
+#[wasm_bindgen_test]
+async fn join_set_detached_tasks_outlive_set_and_remain_abortable() {
+    let (release_tx, release_rx) = oneshot::channel();
+    let finished = Rc::new(Cell::new(false));
+    let task_finished = Rc::clone(&finished);
+    let mut set = JoinSet::new();
+    let detached = set.spawn_local(async move {
+        release_rx.await.expect("detached task must outlive set");
+        task_finished.set(true);
+    });
+    let cancelled = set.spawn_local(pending());
+    yield_now().await;
+    set.detach_all();
+    drop(set);
+    yield_now().await;
+    assert!(!detached.is_finished());
+    assert!(!cancelled.is_finished());
+    release_tx
+        .send(())
+        .expect("dropping set must not cancel detached tasks");
+    cancelled.abort();
+    yield_now().await;
+    assert!(finished.get());
+    assert!(detached.is_finished());
+    assert!(cancelled.is_finished());
+}
