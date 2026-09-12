@@ -107,3 +107,27 @@ pub async fn qualify_exact_stack_parquet() -> Result<String, JsValue> {
     install_panic_hook();
     exact_stack_parquet::qualify().await.map_err(js_error)
 }
+
+/// Execute the narrow Kernel-converted Parquet query with the caller's session.
+///
+/// Returns the verified schema, rows and read evidence; errors propagate without fallback.
+#[cfg(feature = "narrow-kernel-query")]
+pub async fn run_narrow_kernel_query(
+    ctx: &datafusion::prelude::SessionContext,
+) -> datafusion::common::Result<serde_json::Value> {
+    exact_stack_parquet::narrow_query(ctx).await
+}
+
+/// Run the same narrow query in the browser and serialize its verified evidence.
+#[cfg(feature = "narrow-kernel-query")]
+#[wasm_bindgen]
+pub async fn qualify_narrow_kernel_query() -> Result<String, JsValue> {
+    install_panic_hook();
+    let ctx = datafusion::prelude::SessionContext::new_with_config(
+        datafusion::prelude::SessionConfig::new().with_target_partitions(1),
+    );
+    run_narrow_kernel_query(&ctx)
+        .await
+        .map(|result| result.to_string())
+        .map_err(js_error)
+}

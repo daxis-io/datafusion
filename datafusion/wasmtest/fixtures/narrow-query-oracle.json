@@ -1,0 +1,13 @@
+{
+  "schema": [
+    {"name": "order_id", "data_type": "Int64", "nullable": false},
+    {"name": "discount_cents", "data_type": "Int64", "nullable": true},
+    {"name": "is_priority", "data_type": "Boolean", "nullable": true}
+  ],
+  "rows": [
+    [1001, 500, true],
+    [1002, null, false],
+    [1003, 1000, true],
+    [1006, null, true]
+  ]
+}

@@ -40,18 +40,26 @@ workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[example]]
+name = "narrow_query"
+required-features = ["narrow-kernel-query"]
+
 [features]
 default = []
+narrow-kernel-query = ["exact-stack-parquet", "dep:datafusion_executor", "dep:delta_kernel"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
 exact-stack-parquet = [
     "dep:bytes",
     "dep:datafusion-datasource",
     "dep:datafusion-datasource-parquet",
     "dep:parquet",
+    "parquet/async-core",
     "parquet/experimental",
 ]
 
 [dependencies]
+datafusion_executor = { version = "0.26.0", optional = true }
+delta_kernel = { version = "0.28.0", default-features = false, optional = true }
 async-trait = { workspace = true }
 bytes = { workspace = true, optional = true }
 console_error_panic_hook = { version = "0.1.1", optional = true }
@@ -76,6 +84,7 @@ wasm-bindgen-futures = "=0.4.68"
 ignored = ["datafusion-execution", "getrandom", "wasm-bindgen-futures"]
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 datafusion-execution = { workspace = true, features = [
     "disk",
     "runtime-tokio",

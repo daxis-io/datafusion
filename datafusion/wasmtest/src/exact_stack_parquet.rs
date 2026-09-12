@@ -296,11 +296,25 @@ async fn scan_fixture(
     expected_sha256: &str,
     tracker: Arc<ReadTracker>,
 ) -> Result<Vec<datafusion::arrow::array::RecordBatch>> {
+    let ctx =
+        SessionContext::new_with_config(SessionConfig::new().with_target_partitions(1));
+    let plan = fixture_scan(&ctx, name, bytes, expected_sha256, tracker)?;
+    datafusion::physical_plan::collect(plan, ctx.task_ctx()).await
+}
+
+fn fixture_scan(
+    ctx: &SessionContext,
+    name: &str,
+    bytes: Bytes,
+    expected_sha256: &str,
+    tracker: Arc<ReadTracker>,
+) -> Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
     let (orders, _, _) = fixture_batches()?;
+    let file_size = bytes.len() as u64;
     let source = Arc::new(
         ParquetSource::new(orders.schema()).with_parquet_file_reader_factory(Arc::new(
             TrackingReaderFactory {
-                bytes: bytes.clone(),
+                bytes,
                 expected_sha256: expected_sha256.to_owned(),
                 tracker,
                 delay_turns: 0,
@@ -309,14 +323,155 @@ async fn scan_fixture(
     );
     let object_store_url = ObjectStoreUrl::parse("memory://browser-qualification")?;
     let config = FileScanConfigBuilder::new(object_store_url.clone(), source)
-        .with_file(PartitionedFile::new(name, bytes.len() as u64))
+        .with_file(PartitionedFile::new(name, file_size))
         .build();
     let plan = DataSourceExec::from_data_source(config);
-    let ctx =
-        SessionContext::new_with_config(SessionConfig::new().with_target_partitions(1));
     ctx.runtime_env()
         .register_object_store(object_store_url.as_ref(), Arc::new(InMemory::new()));
-    datafusion::physical_plan::collect(plan, ctx.task_ctx()).await
+    Ok(plan)
+}
+
+#[cfg(feature = "narrow-kernel-query")]
+pub async fn narrow_query(ctx: &SessionContext) -> Result<serde_json::Value> {
+    use datafusion::common::DFSchema;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::filter::FilterExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
+    use datafusion_executor::{to_df_expr, to_df_predicate_expr};
+    use delta_kernel::engine::arrow_conversion::TryIntoKernel;
+    use delta_kernel::expressions::{Expression, Predicate};
+    use delta_kernel::schema::StructType;
+    use serde_json::{Value, json};
+
+    if UNCOMPRESSED.len() != 3029 || sha256_hex(UNCOMPRESSED) != UNCOMPRESSED_SHA256 {
+        return Err(DataFusionError::Execution(
+            "narrow fixture identity mismatch".into(),
+        ));
+    }
+    let tracker = Arc::new(ReadTracker::default());
+    let scan = fixture_scan(
+        ctx,
+        "orders-uncompressed.parquet",
+        Bytes::from_static(UNCOMPRESSED),
+        UNCOMPRESSED_SHA256,
+        Arc::clone(&tracker),
+    )?;
+    let kernel_schema: StructType = scan
+        .schema()
+        .try_into_kernel()
+        .map_err(|error| DataFusionError::External(Box::new(error)))?;
+    let df_schema = DFSchema::try_from(scan.schema())?;
+    let predicate = Predicate::or(
+        Expression::column(["is_priority"]).eq(Expression::literal(true)),
+        Expression::column(["discount_cents"]).is_null(),
+    );
+    let filter = Arc::new(FilterExec::try_new(
+        ctx.create_physical_expr(
+            to_df_predicate_expr(&predicate, &kernel_schema)
+                .map_err(|error| DataFusionError::External(Box::new(error)))?,
+            &df_schema,
+        )?,
+        scan,
+    )?);
+    let columns = ["order_id", "discount_cents", "is_priority"]
+        .into_iter()
+        .map(|name| {
+            let expression =
+                to_df_expr(&Expression::column([name]), &kernel_schema, None)
+                    .map_err(|error| DataFusionError::External(Box::new(error)))?;
+            Ok((
+                ctx.create_physical_expr(expression, &df_schema)?,
+                name.to_owned(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let projection = Arc::new(ProjectionExec::try_new(columns, filter)?);
+    let output_schema = projection.schema();
+    let schema = json!(
+        output_schema
+            .fields()
+            .iter()
+            .map(|field| json!({
+                "name": field.name(),
+                "data_type": format!("{:?}", field.data_type()),
+                "nullable": field.is_nullable(),
+            }))
+            .collect::<Vec<_>>()
+    );
+    let oracle: Value =
+        serde_json::from_str(include_str!("../fixtures/narrow-query-oracle.json"))
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+    if schema != oracle["schema"] {
+        return Err(DataFusionError::Execution(format!(
+            "narrow schema mismatch: {schema}"
+        )));
+    }
+    let batches = datafusion::physical_plan::collect(projection, ctx.task_ctx()).await?;
+    if batches.iter().any(|batch| batch.schema() != output_schema) {
+        return Err(DataFusionError::Execution(
+            "narrow batch schema differs from the verified projection".into(),
+        ));
+    }
+    let mut rows: Vec<Value> = normalize_batches(&batches)?
+        .into_iter()
+        .map(|row| json!(row))
+        .collect();
+    rows.sort_by_key(|row| row[0].as_i64());
+    if json!(rows) != oracle["rows"] {
+        return Err(DataFusionError::Execution(format!(
+            "narrow row mismatch: {rows:?}"
+        )));
+    }
+    let footer_length = u32::from_le_bytes(
+        UNCOMPRESSED[UNCOMPRESSED.len() - 8..UNCOMPRESSED.len() - 4]
+            .try_into()
+            .expect("fixed fixture footer length"),
+    ) as u64;
+    let footer_start = UNCOMPRESSED.len() as u64 - 8 - footer_length;
+    let (ranges, data_range_reads) = {
+        let ranges = tracker.ranges.lock().expect("range tracker mutex poisoned");
+        let data_reads = ranges
+            .iter()
+            .filter(|(range, _)| {
+                range.start >= 4 && range.start < range.end && range.end <= footer_start
+            })
+            .count();
+        if ranges.iter().any(|(range, hash)| {
+            range.start >= range.end
+                || range.end > UNCOMPRESSED.len() as u64
+                || sha256_hex(&UNCOMPRESSED[range.start as usize..range.end as usize])
+                    != *hash
+        }) {
+            return Err(DataFusionError::Execution(
+                "invalid narrow range evidence".into(),
+            ));
+        }
+        (
+            ranges
+                .iter()
+                .map(|(range, hash)| {
+                    json!({
+                        "start": range.start, "end": range.end, "sha256": hash,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            data_reads,
+        )
+    };
+    let factory_calls = tracker.factory_calls.load(Ordering::SeqCst);
+    if factory_calls == 0 || data_range_reads == 0 {
+        return Err(DataFusionError::Execution(
+            "narrow query did not read Parquet data ranges".into(),
+        ));
+    }
+    prove_outer_checksum_mismatch().await?;
+    prove_invalid_range().await?;
+    prove_truncated_footer().await?;
+    Ok(json!({
+        "fixture_sha256": UNCOMPRESSED_SHA256, "schema": schema, "rows": rows,
+        "factory_calls": factory_calls, "ranges": ranges,
+        "data_range_reads": data_range_reads, "truncated_footer": "rejected",
+    }))
 }
 
 async fn prove_outer_checksum_mismatch() -> Result<()> {
