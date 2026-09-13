@@ -56,6 +56,34 @@ impl Default for CoalesceFunc {
 }
 
 impl CoalesceFunc {
+    /// Apply this builtin's schema-independent rewrite to its owned arguments.
+    ///
+    /// This is the same implementation used by `ScalarUDFImpl::simplify`.
+    /// Callers constructing expressions can reuse it without a full optimizer
+    /// pass or allocating a simplification context that this rewrite ignores.
+    pub fn simplify_arguments(args: Vec<Expr>) -> Result<ExprSimplifyResult> {
+        if args.is_empty() {
+            return plan_err!("coalesce must have at least one argument");
+        }
+        if args.len() == 1 {
+            return Ok(ExprSimplifyResult::Simplified(
+                args.into_iter().next().unwrap(),
+            ));
+        }
+
+        let n = args.len();
+        let (init, last_elem) = args.split_at(n - 1);
+        let whens = init
+            .iter()
+            .map(|x| x.clone().is_not_null())
+            .collect::<Vec<_>>();
+        let cases = init.to_vec();
+        Ok(ExprSimplifyResult::Simplified(
+            CaseBuilder::new(None, whens, cases, Some(Box::new(last_elem[0].clone())))
+                .end()?,
+        ))
+    }
+
     pub fn new() -> Self {
         Self {
             signature: Signature::user_defined(Volatility::Immutable),
@@ -94,26 +122,7 @@ impl ScalarUDFImpl for CoalesceFunc {
         args: Vec<Expr>,
         _info: &SimplifyContext,
     ) -> Result<ExprSimplifyResult> {
-        if args.is_empty() {
-            return plan_err!("coalesce must have at least one argument");
-        }
-        if args.len() == 1 {
-            return Ok(ExprSimplifyResult::Simplified(
-                args.into_iter().next().unwrap(),
-            ));
-        }
-
-        let n = args.len();
-        let (init, last_elem) = args.split_at(n - 1);
-        let whens = init
-            .iter()
-            .map(|x| x.clone().is_not_null())
-            .collect::<Vec<_>>();
-        let cases = init.to_vec();
-        Ok(ExprSimplifyResult::Simplified(
-            CaseBuilder::new(None, whens, cases, Some(Box::new(last_elem[0].clone())))
-                .end()?,
-        ))
+        Self::simplify_arguments(args)
     }
 
     /// coalesce evaluates to the first value which is not NULL

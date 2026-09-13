@@ -131,3 +131,19 @@ pub async fn qualify_narrow_kernel_query() -> Result<String, JsValue> {
         .map(|result| result.to_string())
         .map_err(js_error)
 }
+
+/// Execute the identical real Delta adapter qualification on native and WASM.
+#[cfg(feature = "narrow-delta-query")]
+pub async fn run_delta_query() -> datafusion::common::Result<serde_json::Value> {
+    Box::pin(exact_stack_parquet::delta_query()).await
+}
+/// Native/browser parity entry point for the opt-in Delta adapter.
+#[cfg(feature = "narrow-delta-query")]
+#[wasm_bindgen]
+pub async fn qualify_delta_query() -> Result<String, JsValue> {
+    install_panic_hook();
+    Box::pin(run_delta_query())
+        .await
+        .map(|value| value.to_string())
+        .map_err(js_error)
+}

@@ -24,7 +24,7 @@ use datafusion_common::{
 };
 use datafusion_physical_expr::{
     expressions::{Column, Literal},
-    projection::{ProjectionExpr, ProjectionExprs},
+    projection::{ProjectionExpr, ProjectionExprs, Projector},
 };
 use datafusion_physical_expr_adapter::rewrite::rewrite_input_file_name_in_projection;
 use futures::{FutureExt, StreamExt};
@@ -91,16 +91,40 @@ impl FileOpener for ProjectionOpener {
 
         let inner = self.inner.open(partitioned_file)?;
 
-        Ok(async move {
-            let stream = inner.await?;
-            let stream = stream.map(move |batch| {
-                let batch = batch?;
-                let batch = projector.project_batch(&batch)?;
-                Ok(batch)
-            });
-            Ok(stream.boxed())
+        Ok(project_open(inner, projector).boxed())
+    }
+}
+
+type ProjectedStream =
+    futures::stream::BoxStream<'static, Result<arrow::array::RecordBatch>>;
+
+fn project_stream(
+    stream: ProjectedStream,
+    projector: Projector,
+) -> impl futures::Stream<Item = Result<arrow::array::RecordBatch>> + Send {
+    stream.map(move |batch| projector.project_batch(&batch?))
+}
+
+async fn project_open(
+    inner: FileOpenFuture,
+    projector: Projector,
+) -> Result<ProjectedStream> {
+    let stream = inner.await?;
+    Ok(project_stream(stream, projector).boxed())
+}
+
+impl ProjectionOpener {
+    /// Actual boxed projection future and mapped-stream frame layouts.
+    /// Does not construct a projector or stream and does not describe their
+    /// separately owned schemas, expressions, input buffers or inner future.
+    pub fn frame_layouts() -> [std::alloc::Layout; 2] {
+        fn layout<A, T>(_factory: impl FnOnce(A) -> T) -> std::alloc::Layout {
+            std::alloc::Layout::new::<T>()
         }
-        .boxed())
+        [
+            layout(|(inner, projector)| project_open(inner, projector)),
+            layout(|(stream, projector)| project_stream(stream, projector)),
+        ]
     }
 }
 

@@ -158,6 +158,12 @@ impl ScalarFunctionExpr {
         &self.config_options
     }
 
+    /// Returns the shared immutable configuration used by this expression.
+    /// Derived expressions can preserve the same configuration ownership.
+    pub fn config_options_arc(&self) -> &Arc<ConfigOptions> {
+        &self.config_options
+    }
+
     /// Given an arbitrary PhysicalExpr attempt to downcast it to a ScalarFunctionExpr
     /// and verify that its inner function is of type T.
     /// If the downcast fails, or the function is not of type T, returns `None`.

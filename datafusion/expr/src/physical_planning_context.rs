@@ -58,6 +58,21 @@ pub struct PhysicalPlanningContext {
 }
 
 impl PhysicalPlanningContext {
+    /// Allocation layouts retained by an empty planning context.
+    ///
+    /// Both shared owners are allocated by `Default`, even when no scalar
+    /// subquery is collected. Empty maps and vectors have no backing storage.
+    pub fn empty_owner_layouts() -> [std::alloc::Layout; 2] {
+        [
+            std::alloc::Layout::new::<(
+                usize,
+                usize,
+                HashMap<crate::logical_plan::Subquery, SubqueryIndex>,
+            )>(),
+            std::alloc::Layout::new::<(usize, usize, Vec<Mutex<Option<ScalarValue>>>)>(),
+        ]
+    }
+
     /// Create a [`PhysicalPlanningContext`] from an index map and a shared
     /// results container. The index map must use the same indices as slots in
     /// `results`.

@@ -240,6 +240,12 @@ impl From<&FilterExec> for FilterExecBuilder {
 }
 
 impl FilterExec {
+    /// Compiler layout of this operator's boxed stream, excluding backing owners.
+    /// This query does not create a stream or evaluate a plan.
+    pub fn stream_frame_layout() -> std::alloc::Layout {
+        std::alloc::Layout::new::<FilterExecStream>()
+    }
+
     /// Create a FilterExec on an input using the builder pattern
     pub fn try_new(
         predicate: Arc<dyn PhysicalExpr>,

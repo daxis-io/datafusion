@@ -1293,7 +1293,7 @@ impl ProjectionMapping {
                                 Arc::clone(&field_mapping.field_accessor),
                                 accessor_fn_args,
                                 return_field,
-                                Arc::new(func_expr.config_options().clone()),
+                                Arc::clone(func_expr.config_options_arc()),
                             ))
                                 as Arc<dyn PhysicalExpr>;
 

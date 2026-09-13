@@ -17,46 +17,64 @@
 
 //! Execution plan for reading JSON files (line-delimited and array formats)
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::BufReader;
+#[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::task::{Context, Poll};
 
 use crate::file_format::JsonDecoder;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::utils::{ChannelReader, JsonArrayToNdjsonReader};
 
 use datafusion_common::error::{DataFusionError, Result};
 use datafusion_common::exec_datafusion_err;
 use datafusion_common::tree_node::TreeNodeRecursion;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_common_runtime::{JoinSet, SpawnedTask};
+#[cfg(not(target_arch = "wasm32"))]
+use datafusion_datasource::ListingTableUrl;
 use datafusion_datasource::boundary_stream::AlignedBoundaryStream;
 use datafusion_datasource::decoder::{DecoderDeserializer, deserialize_stream};
 use datafusion_datasource::file_compression_type::FileCompressionType;
 use datafusion_datasource::file_stream::{FileOpenFuture, FileOpener};
 use datafusion_datasource::projection::{ProjectionOpener, SplitProjection};
-use datafusion_datasource::{ListingTableUrl, PartitionedFile, as_file_source};
+use datafusion_datasource::{PartitionedFile, as_file_source};
+#[cfg(any(feature = "proto", not(target_arch = "wasm32")))]
+use datafusion_physical_plan::ExecutionPlan;
+#[cfg(not(target_arch = "wasm32"))]
+use datafusion_physical_plan::ExecutionPlanProperties;
 use datafusion_physical_plan::projection::ProjectionExprs;
-use datafusion_physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 
 use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
+use arrow::json;
 use arrow::json::ReaderBuilder;
-use arrow::{datatypes::SchemaRef, json};
 use datafusion_datasource::file::FileSource;
 use datafusion_datasource::file_scan_config::FileScanConfig;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_execution::TaskContext;
 use datafusion_physical_plan::metrics::ExecutionPlanMetricsSet;
 
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::Stream;
+use futures::{StreamExt, TryStreamExt};
+#[cfg(not(target_arch = "wasm32"))]
 use object_store::buffered::BufWriter;
 use object_store::{GetOptions, GetResultPayload, ObjectStore};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::AsyncWriteExt;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Channel buffer size for streaming JSON array processing.
 /// With ~128KB average chunk size, 128 chunks ≈ 16MB buffer.
+#[cfg(not(target_arch = "wasm32"))]
 const CHANNEL_BUFFER_SIZE: usize = 128;
 
 /// Buffer size for JsonArrayToNdjsonReader (2MB each, 4MB total for input+output)
+#[cfg(not(target_arch = "wasm32"))]
 const JSON_CONVERTER_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 
 // ============================================================================
@@ -68,6 +86,7 @@ const JSON_CONVERTER_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 ///
 /// This ensures cancel-safety: when the stream is dropped, the tasks
 /// are properly aborted via SpawnedTask's Drop implementation.
+#[cfg(not(target_arch = "wasm32"))]
 struct JsonArrayStream {
     inner: ReceiverStream<std::result::Result<RecordBatch, arrow::error::ArrowError>>,
     /// Task that reads from object store and sends bytes to channel.
@@ -78,6 +97,7 @@ struct JsonArrayStream {
     _parse_task: SpawnedTask<()>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Stream for JsonArrayStream {
     type Item = std::result::Result<RecordBatch, arrow::error::ArrowError>;
 
@@ -136,6 +156,7 @@ pub struct JsonSource {
     /// When `true` (default), expects newline-delimited JSON (NDJSON).
     /// When `false`, expects JSON array format `[{...}, {...}]`.
     newline_delimited: bool,
+    injected_store: Option<Arc<dyn ObjectStore>>,
 }
 
 impl JsonSource {
@@ -148,7 +169,17 @@ impl JsonSource {
             batch_size: None,
             metrics: ExecutionPlanMetricsSet::new(),
             newline_delimited: true,
+            injected_store: None,
         }
+    }
+
+    /// Inject a task-local store without changing the session registry.
+    ///
+    /// Injected sources read whole files and cannot be serialized. The caller owns path,
+    /// identity and resource admission in the store implementation.
+    pub fn with_object_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
+        self.injected_store = Some(store);
+        self
     }
 
     /// Set whether to read as newline-delimited JSON.
@@ -174,6 +205,22 @@ impl FileSource for JsonSource {
         base_config: &FileScanConfig,
         _partition: usize,
     ) -> Result<Arc<dyn FileOpener>> {
+        if self.injected_store.is_some()
+            && base_config
+                .file_groups
+                .iter()
+                .flat_map(|g| g.iter())
+                .any(|f| f.range.is_some())
+        {
+            return datafusion_common::not_impl_err!(
+                "Injected JSON sources require whole files"
+            );
+        }
+        let object_store = self
+            .injected_store
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or(object_store);
         // Get the projected file schema for JsonOpener
         let file_schema = self.table_schema.file_schema();
         let projected_schema =
@@ -229,6 +276,10 @@ impl FileSource for JsonSource {
         &self.metrics
     }
 
+    fn supports_repartitioning(&self) -> bool {
+        self.injected_store.is_none() && self.newline_delimited
+    }
+
     fn file_type(&self) -> &str {
         "json"
     }
@@ -252,6 +303,11 @@ impl FileSource for JsonSource {
         use datafusion_proto_models::protobuf;
         use protobuf::physical_plan_node::PhysicalPlanType;
 
+        if self.injected_store.is_some() {
+            return datafusion_common::not_impl_err!(
+                "Cannot serialize an injected JSON store"
+            );
+        }
         let node = protobuf::JsonScanExecNode {
             base_conf: Some(base.try_to_proto(ctx)?),
         };
@@ -297,6 +353,52 @@ impl JsonSource {
     }
 }
 
+type JsonBytesStream = futures::stream::BoxStream<'static, Result<bytes::Bytes>>;
+type StoreBytesStream =
+    futures::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>;
+
+fn ndjson_input(
+    input: StoreBytesStream,
+) -> impl Stream<Item = Result<bytes::Bytes>> + Send {
+    input.map_err(DataFusionError::from)
+}
+
+fn ndjson_output(
+    input: JsonBytesStream,
+    decoder: json::reader::Decoder,
+) -> impl Stream<Item = Result<RecordBatch>> + Send {
+    deserialize_stream(
+        input.fuse(),
+        DecoderDeserializer::new(JsonDecoder::new(decoder)),
+    )
+    .map_err(Into::into)
+}
+
+impl JsonSource {
+    /// Layouts of the actual whole-file NDJSON opener and stream wrappers.
+    ///
+    /// Returns the opener future, mapped store stream, uncompressed conversion
+    /// wrapper, decoder stream and opener header layouts, without constructing any of them.
+    /// These are frame sizes only; the store's future/stream owners and decoder
+    /// buffers must be admitted separately. Applies to uncompressed Stream
+    /// payloads with no ranges, not native File or JSON-array payloads.
+    pub fn ndjson_frame_layouts() -> [std::alloc::Layout; 5] {
+        fn layout<A, T>(_factory: impl FnOnce(A) -> T) -> std::alloc::Layout {
+            std::alloc::Layout::new::<T>()
+        }
+        [
+            layout(|(file, store, schema, batch, compression, ndjson)| {
+                JsonOpener::open_unboxed(file, store, schema, batch, compression, ndjson)
+            }),
+            layout(ndjson_input),
+            // convert_stream's UNCOMPRESSED branch boxes its BoxStream argument.
+            std::alloc::Layout::new::<JsonBytesStream>(),
+            layout(|(input, decoder)| ndjson_output(input, decoder)),
+            std::alloc::Layout::new::<JsonOpener>(),
+        ]
+    }
+}
+
 impl FileOpener for JsonOpener {
     /// Open a partitioned JSON file.
     ///
@@ -310,6 +412,12 @@ impl FileOpener for JsonOpener {
     ///
     /// Note: JSON array format does not support range-based scanning.
     fn open(&self, partitioned_file: PartitionedFile) -> Result<FileOpenFuture> {
+        #[cfg(target_arch = "wasm32")]
+        if !self.newline_delimited {
+            return datafusion_common::not_impl_err!(
+                "JSON arrays require the native runtime"
+            );
+        }
         let store = Arc::clone(&self.object_store);
         let schema = Arc::clone(&self.projected_schema);
         let batch_size = self.batch_size;
@@ -325,97 +433,119 @@ impl FileOpener for JsonOpener {
             ));
         }
 
-        Ok(Box::pin(async move {
-            let file_size = partitioned_file.object_meta.size;
-            let location = &partitioned_file.object_meta.location;
+        Ok(Box::pin(JsonOpener::open_unboxed(
+            partitioned_file,
+            store,
+            schema,
+            batch_size,
+            file_compression_type,
+            newline_delimited,
+        )))
+    }
+}
 
-            if let Some(file_range) = partitioned_file.range.as_ref() {
-                let raw_start: u64 = file_range.start.try_into().map_err(|_| {
-                    exec_datafusion_err!(
-                        "Expected start range to fit in u64, got {}",
-                        file_range.start
-                    )
-                })?;
-                let raw_end: u64 = file_range.end.try_into().map_err(|_| {
-                    exec_datafusion_err!(
-                        "Expected end range to fit in u64, got {}",
-                        file_range.end
-                    )
-                })?;
+impl JsonOpener {
+    async fn open_unboxed(
+        partitioned_file: PartitionedFile,
+        store: Arc<dyn ObjectStore>,
+        schema: SchemaRef,
+        batch_size: usize,
+        file_compression_type: FileCompressionType,
+        newline_delimited: bool,
+    ) -> Result<futures::stream::BoxStream<'static, Result<RecordBatch>>> {
+        let file_size = partitioned_file.object_meta.size;
+        let location = &partitioned_file.object_meta.location;
 
-                let aligned_stream = AlignedBoundaryStream::new(
-                    Arc::clone(&store),
-                    location.clone(),
-                    raw_start,
-                    raw_end,
-                    file_size,
-                    b'\n',
+        if let Some(file_range) = partitioned_file.range.as_ref() {
+            let raw_start: u64 = file_range.start.try_into().map_err(|_| {
+                exec_datafusion_err!(
+                    "Expected start range to fit in u64, got {}",
+                    file_range.start
                 )
-                .await?
-                .map_err(DataFusionError::from);
+            })?;
+            let raw_end: u64 = file_range.end.try_into().map_err(|_| {
+                exec_datafusion_err!(
+                    "Expected end range to fit in u64, got {}",
+                    file_range.end
+                )
+            })?;
 
-                let decoder = ReaderBuilder::new(schema)
-                    .with_batch_size(batch_size)
-                    .build_decoder()?;
-                let input = file_compression_type
-                    .convert_stream(aligned_stream.boxed())?
-                    .fuse();
-                let stream = deserialize_stream(
-                    input,
-                    DecoderDeserializer::new(JsonDecoder::new(decoder)),
-                );
-                return Ok(stream.map_err(Into::into).boxed());
-            }
+            let aligned_stream = AlignedBoundaryStream::new(
+                Arc::clone(&store),
+                location.clone(),
+                raw_start,
+                raw_end,
+                file_size,
+                b'\n',
+            )
+            .await?
+            .map_err(DataFusionError::from);
 
-            // No range specified — read the entire file
-            let options = GetOptions::default();
-            let result = store.get_opts(location, options).await?;
+            let decoder = ReaderBuilder::new(schema)
+                .with_batch_size(batch_size)
+                .build_decoder()?;
+            let input = file_compression_type
+                .convert_stream(aligned_stream.boxed())?
+                .fuse();
+            let stream = deserialize_stream(
+                input,
+                DecoderDeserializer::new(JsonDecoder::new(decoder)),
+            );
+            return Ok(stream.map_err(Into::into).boxed());
+        }
 
-            match result.payload {
-                #[cfg(not(target_arch = "wasm32"))]
-                GetResultPayload::File(file, _) => {
-                    let bytes = file_compression_type.convert_read(file)?;
+        // No range specified — read the entire file
+        let options = GetOptions::default();
+        let result = store.get_opts(location, options).await?;
 
-                    if newline_delimited {
-                        // NDJSON: use BufReader directly
-                        let reader = BufReader::new(bytes);
-                        let arrow_reader = ReaderBuilder::new(schema)
-                            .with_batch_size(batch_size)
-                            .build(reader)?;
+        match result.payload {
+            #[cfg(not(target_arch = "wasm32"))]
+            GetResultPayload::File(file, _) => {
+                let bytes = file_compression_type.convert_read(file)?;
 
-                        Ok(futures::stream::iter(arrow_reader)
-                            .map(|r| r.map_err(Into::into))
-                            .boxed())
-                    } else {
-                        // JSON array format: wrap with streaming converter
-                        let ndjson_reader = JsonArrayToNdjsonReader::with_capacity(
-                            bytes,
-                            JSON_CONVERTER_BUFFER_SIZE,
-                        );
-                        let arrow_reader = ReaderBuilder::new(schema)
-                            .with_batch_size(batch_size)
-                            .build(ndjson_reader)?;
+                if newline_delimited {
+                    // NDJSON: use BufReader directly
+                    let reader = BufReader::new(bytes);
+                    let arrow_reader = ReaderBuilder::new(schema)
+                        .with_batch_size(batch_size)
+                        .build(reader)?;
 
-                        Ok(futures::stream::iter(arrow_reader)
-                            .map(|r| r.map_err(Into::into))
-                            .boxed())
-                    }
+                    Ok(futures::stream::iter(arrow_reader)
+                        .map(|r| r.map_err(Into::into))
+                        .boxed())
+                } else {
+                    // JSON array format: wrap with streaming converter
+                    let ndjson_reader = JsonArrayToNdjsonReader::with_capacity(
+                        bytes,
+                        JSON_CONVERTER_BUFFER_SIZE,
+                    );
+                    let arrow_reader = ReaderBuilder::new(schema)
+                        .with_batch_size(batch_size)
+                        .build(ndjson_reader)?;
+
+                    Ok(futures::stream::iter(arrow_reader)
+                        .map(|r| r.map_err(Into::into))
+                        .boxed())
                 }
-                GetResultPayload::Stream(s) => {
-                    if newline_delimited {
-                        // Newline-delimited JSON (NDJSON) streaming reader
-                        let s = s.map_err(DataFusionError::from);
-                        let decoder = ReaderBuilder::new(schema)
-                            .with_batch_size(batch_size)
-                            .build_decoder()?;
-                        let input =
-                            file_compression_type.convert_stream(s.boxed())?.fuse();
-                        let stream = deserialize_stream(
-                            input,
-                            DecoderDeserializer::new(JsonDecoder::new(decoder)),
-                        );
-                        Ok(stream.map_err(Into::into).boxed())
-                    } else {
+            }
+            GetResultPayload::Stream(s) => {
+                if newline_delimited {
+                    // Newline-delimited JSON (NDJSON) streaming reader
+                    let s = ndjson_input(s);
+                    let decoder = ReaderBuilder::new(schema)
+                        .with_batch_size(batch_size)
+                        .build_decoder()?;
+                    let input = file_compression_type.convert_stream(s.boxed())?;
+                    Ok(ndjson_output(input, decoder).boxed())
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        datafusion_common::not_impl_err!(
+                            "JSON arrays require the native runtime"
+                        )
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
                         // JSON array format: streaming conversion with channel-based byte transfer
                         //
                         // Architecture:
@@ -518,10 +648,11 @@ impl FileOpener for JsonOpener {
                     }
                 }
             }
-        }))
+        }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn plan_to_json(
     task_ctx: Arc<TaskContext>,
     plan: Arc<dyn ExecutionPlan>,

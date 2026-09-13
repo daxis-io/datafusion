@@ -19,6 +19,7 @@
 
 use std::io::{BufRead, Read};
 
+#[cfg(not(target_arch = "wasm32"))]
 use bytes::Bytes;
 
 // ============================================================================
@@ -416,12 +417,14 @@ impl<R: Read> BufRead for JsonArrayToNdjsonReader<R> {
 /// loading the entire file into memory. Uses `tokio::sync::mpsc::Receiver`
 /// with `blocking_recv()` so the async producer never blocks a tokio worker
 /// thread, while the sync consumer (running in `spawn_blocking`) safely blocks.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ChannelReader {
     rx: tokio::sync::mpsc::Receiver<Bytes>,
     current: Option<Bytes>,
     pos: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ChannelReader {
     /// Create a new ChannelReader from a tokio mpsc receiver.
     pub fn new(rx: tokio::sync::mpsc::Receiver<Bytes>) -> Self {
@@ -433,6 +436,7 @@ impl ChannelReader {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Read for ChannelReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         loop {

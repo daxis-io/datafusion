@@ -870,6 +870,20 @@ pub struct AggregateExec {
 }
 
 impl AggregateExec {
+    /// Concrete frame layouts for global and unordered partial/final aggregation.
+    ///
+    /// Returns global wrapper, global inner stream, partial hash and final hash
+    /// frames. This allocates nothing and does not admit a plan or describe
+    /// accumulator, key, metric, expression, batch, or spill backing owners.
+    pub fn unordered_stream_layouts() -> [std::alloc::Layout; 4] {
+        [
+            std::alloc::Layout::new::<AggregateStream>(),
+            AggregateStream::inner_stream_layout(),
+            std::alloc::Layout::new::<PartialHashAggregateStream>(),
+            std::alloc::Layout::new::<FinalHashAggregateStream>(),
+        ]
+    }
+
     /// Function used in `OptimizeAggregateOrder` optimizer rule,
     /// where we need parts of the new value, others cloned from the old one
     /// Rewrites aggregate exec with new aggregate expressions.

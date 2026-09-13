@@ -90,11 +90,7 @@ impl MorselPlanner for FileOpenFutureMorselPlanner {
     fn plan(self: Box<Self>) -> Result<Option<MorselPlan>> {
         match *self {
             Self::Unopened { file_opener, file } => {
-                let io_future = async move {
-                    let stream = file_opener.open(*file)?.await?;
-                    Ok(Box::new(Self::ReadyStream(stream)) as Box<dyn MorselPlanner>)
-                }
-                .boxed();
+                let io_future = open_file(file_opener, file).boxed();
                 Ok(Some(MorselPlan::new().with_pending_planner(io_future)))
             }
             Self::ReadyStream(stream) => Ok(Some(
@@ -102,6 +98,36 @@ impl MorselPlanner for FileOpenFutureMorselPlanner {
                     .with_morsels(vec![Box::new(FileStreamMorsel { stream })]),
             )),
         }
+    }
+}
+
+async fn open_file(
+    file_opener: Arc<dyn FileOpener>,
+    file: Box<PartitionedFile>,
+) -> Result<Box<dyn MorselPlanner>> {
+    let stream = file_opener.open(*file)?.await?;
+    Ok(Box::new(FileOpenFutureMorselPlanner::ReadyStream(stream))
+        as Box<dyn MorselPlanner>)
+}
+
+impl FileOpenerMorselizer {
+    /// Layouts of the file-opener adapter, planner, file box, morsel, actual I/O
+    /// future and PendingMorselPlanner's additional boxed BoxFuture wrapper.
+    /// Nested opener/stream futures and backing owners remain separate.
+    pub fn frame_layouts() -> [std::alloc::Layout; 6] {
+        fn layout<A, T>(_factory: impl FnOnce(A) -> T) -> std::alloc::Layout {
+            std::alloc::Layout::new::<T>()
+        }
+        [
+            std::alloc::Layout::new::<Self>(),
+            std::alloc::Layout::new::<FileOpenFutureMorselPlanner>(),
+            std::alloc::Layout::new::<PartitionedFile>(),
+            std::alloc::Layout::new::<FileStreamMorsel>(),
+            layout(|(opener, file)| open_file(opener, file)),
+            std::alloc::Layout::new::<
+                futures::future::BoxFuture<'static, Result<Box<dyn MorselPlanner>>>,
+            >(),
+        ]
     }
 }
 

@@ -45,13 +45,13 @@ mod sql_server;
 
 use datafusion::error::{DataFusionError, Result};
 use strum::{IntoEnumIterator, VariantNames};
-use strum_macros::{Display, EnumIter, EnumString, VariantNames};
+use strum_macros::{Display, EnumIter, EnumString};
 
 /// The `all` option cannot run all examples end-to-end because the
 /// `server` example must run in a separate process before the `client`
 /// example can connect.  
 /// Therefore, `all` only iterates over individually runnable examples.
-#[derive(EnumIter, EnumString, Display, VariantNames)]
+#[derive(EnumIter, EnumString, Display, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 enum ExampleKind {
     All,

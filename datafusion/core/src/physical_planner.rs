@@ -163,19 +163,8 @@ impl PhysicalPlanner for DefaultPhysicalPlanner {
         logical_plan: &LogicalPlan,
         session_state: &dyn Session,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        if let Some(plan) = self
-            .handle_explain_or_analyze(logical_plan, session_state)
-            .await?
-        {
-            return Ok(plan);
-        }
-        let plan = self
-            .create_initial_plan(logical_plan, session_state)
-            .await?;
-
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        datafusion_common_runtime::yield_now().await;
-        self.optimize_physical_plan(plan, session_state, |_, _| {})
+        self.create_physical_plan_unboxed(logical_plan, session_state)
+            .await
     }
 
     /// Create a physical expression from a logical expression
@@ -258,6 +247,74 @@ struct LogicalNode<'a> {
 }
 
 impl DefaultPhysicalPlanner {
+    /// Create a physical plan without allocating a trait future wrapper.
+    ///
+    /// This is the same implementation used by [`PhysicalPlanner`]. Its future
+    /// can be inspected before polling when a caller must admit frame storage.
+    pub async fn create_physical_plan_unboxed(
+        &self,
+        logical_plan: &LogicalPlan,
+        session_state: &dyn Session,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if let Some(plan) = self
+            .handle_explain_or_analyze(logical_plan, session_state)
+            .await?
+        {
+            return Ok(plan);
+        }
+        let plan = self
+            .create_initial_plan(logical_plan, session_state)
+            .await?;
+
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        datafusion_common_runtime::yield_now().await;
+        self.optimize_physical_plan(plan, session_state, |_, _| {})
+    }
+
+    /// Returns the concrete initial planner node layout without constructing a plan.
+    pub fn initial_plan_node_layout() -> std::alloc::Layout {
+        std::alloc::Layout::new::<LogicalNode<'static>>()
+    }
+
+    /// Compiler layouts of the initial-plan wrapper, leaf future and optional leaf future.
+    ///
+    /// This query constructs neither future and allocates nothing. It describes
+    /// frame storage only: queue nodes, provider futures, plans, expressions and
+    /// other backing allocations remain separate admission obligations.
+    pub fn planning_future_layouts() -> [std::alloc::Layout; 3] {
+        fn layout<A, F>(_factory: impl FnOnce(A) -> F) -> std::alloc::Layout {
+            std::alloc::Layout::new::<F>()
+        }
+        fn optional_layout<A, F>(_factory: impl FnOnce(A) -> F) -> std::alloc::Layout {
+            std::alloc::Layout::new::<Option<F>>()
+        }
+        [
+            layout(
+                |(planner, logical, session): (&Self, &LogicalPlan, &dyn Session)| {
+                    planner.create_initial_plan_unboxed(logical, session)
+                },
+            ),
+            layout(
+                |(planner, index, tree, session, context): (
+                    &Self,
+                    usize,
+                    Arc<Vec<LogicalNode<'_>>>,
+                    &dyn Session,
+                    &PhysicalPlanningContext,
+                )| planner.task_helper(index, tree, session, context),
+            ),
+            optional_layout(
+                |(planner, index, tree, session, context): (
+                    &Self,
+                    usize,
+                    Arc<Vec<LogicalNode<'_>>>,
+                    &dyn Session,
+                    &PhysicalPlanningContext,
+                )| planner.task_helper(index, tree, session, context),
+            ),
+        ]
+    }
+
     /// Create a physical planner that uses `extension_planners` to
     /// plan user-defined logical nodes [`LogicalPlan::Extension`]
     /// or user-defined table sources in [`LogicalPlan::TableScan`].
@@ -337,49 +394,55 @@ impl DefaultPhysicalPlanner {
         logical_plan: &'a LogicalPlan,
         session_state: &'a dyn Session,
     ) -> futures::future::BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
-        Box::pin(async move {
-            // When `enable_physical_uncorrelated_scalar_subquery` is disabled, the
-            // `ScalarSubqueryToJoin` optimizer rule rewrites all uncorrelated
-            // scalar subqueries to joins, so none should reach this point.
-            // Skip collection in that case to avoid creating a no-op
-            // `ScalarSubqueryExec` wrapper.
-            let all_subqueries = if session_state
-                .config_options()
-                .optimizer
-                .enable_physical_uncorrelated_scalar_subquery
-            {
-                Self::collect_scalar_subqueries(logical_plan)
-            } else {
-                Vec::new()
-            };
-            let (links, index_map) = self
-                .plan_scalar_subqueries(all_subqueries, session_state)
-                .await?;
+        Box::pin(self.create_initial_plan_unboxed(logical_plan, session_state))
+    }
 
-            if links.is_empty() {
-                return self
-                    .create_initial_plan_inner(
-                        logical_plan,
-                        session_state,
-                        &PhysicalPlanningContext::default(),
-                    )
-                    .await;
-            }
+    async fn create_initial_plan_unboxed(
+        &self,
+        logical_plan: &LogicalPlan,
+        session_state: &dyn Session,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // When `enable_physical_uncorrelated_scalar_subquery` is disabled, the
+        // `ScalarSubqueryToJoin` optimizer rule rewrites all uncorrelated
+        // scalar subqueries to joins, so none should reach this point.
+        // Skip collection in that case to avoid creating a no-op
+        // `ScalarSubqueryExec` wrapper.
+        let all_subqueries = if session_state
+            .config_options()
+            .optimizer
+            .enable_physical_uncorrelated_scalar_subquery
+        {
+            Self::collect_scalar_subqueries(logical_plan)
+        } else {
+            Vec::new()
+        };
+        let (links, index_map) = self
+            .plan_scalar_subqueries(all_subqueries, session_state)
+            .await?;
 
-            // Build a `PhysicalPlanningContext` that carries the index map and
-            // shared results container into calls that create physical expressions.
-            // The context is threaded explicitly through physical planning rather
-            // than being stashed in `ExecutionProps`, so the planner does not need
-            // a mutable `SessionState` and each recursively planned subtree receives
-            // the correct context.
-            let results = ScalarSubqueryResults::new(links.len());
-            let planning_ctx = PhysicalPlanningContext::new(index_map, results.clone());
+        if links.is_empty() {
+            return self
+                .create_initial_plan_inner(
+                    logical_plan,
+                    session_state,
+                    &PhysicalPlanningContext::default(),
+                )
+                .await;
+        }
 
-            let plan = self
-                .create_initial_plan_inner(logical_plan, session_state, &planning_ctx)
-                .await?;
-            Ok(Arc::new(ScalarSubqueryExec::new(plan, links, results)))
-        })
+        // Build a `PhysicalPlanningContext` that carries the index map and
+        // shared results container into calls that create physical expressions.
+        // The context is threaded explicitly through physical planning rather
+        // than being stashed in `ExecutionProps`, so the planner does not need
+        // a mutable `SessionState` and each recursively planned subtree receives
+        // the correct context.
+        let results = ScalarSubqueryResults::new(links.len());
+        let planning_ctx = PhysicalPlanningContext::new(index_map, results.clone());
+
+        let plan = self
+            .create_initial_plan_inner(logical_plan, session_state, &planning_ctx)
+            .await?;
+        Ok(Arc::new(ScalarSubqueryExec::new(plan, links, results)))
     }
 
     /// Inner physical planning that converts a logical plan tree into an

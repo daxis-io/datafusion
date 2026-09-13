@@ -85,6 +85,12 @@ pub struct ProjectionExec {
 }
 
 impl ProjectionExec {
+    /// Compiler layout of this operator's boxed stream, excluding backing owners.
+    /// This query does not create a stream or evaluate a plan.
+    pub fn stream_frame_layout() -> std::alloc::Layout {
+        std::alloc::Layout::new::<ProjectionStream>()
+    }
+
     /// Create a projection on an input
     ///
     /// # Example:

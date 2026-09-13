@@ -123,6 +123,7 @@ runtime-browser = [
     "datafusion-common-runtime/runtime-browser",
     "datafusion-datasource/runtime-browser",
     "datafusion-datasource-parquet?/runtime-browser",
+    "datafusion-datasource-json?/runtime-browser",
     "datafusion-execution/runtime-browser",
     "datafusion-physical-expr/runtime-browser",
     "datafusion-physical-plan/runtime-browser",
@@ -133,6 +134,7 @@ runtime-tokio = [
     "datafusion-common-runtime/runtime-tokio",
     "datafusion-datasource/runtime-tokio",
     "datafusion-datasource-parquet?/runtime-tokio",
+    "datafusion-datasource-json?/runtime-tokio",
     "datafusion-execution/runtime-tokio",
     "datafusion-physical-expr/runtime-tokio",
     "datafusion-physical-plan/runtime-tokio",
@@ -179,7 +181,7 @@ datafusion-datasource = { workspace = true, default-features = false }
 datafusion-datasource-arrow = { workspace = true, optional = true }
 datafusion-datasource-avro = { workspace = true, optional = true }
 datafusion-datasource-csv = { workspace = true, optional = true }
-datafusion-datasource-json = { workspace = true, optional = true }
+datafusion-datasource-json = { workspace = true, optional = true, default-features = false }
 datafusion-datasource-parquet = { workspace = true, optional = true }
 datafusion-execution = { workspace = true, default-features = false }
 datafusion-expr = { workspace = true, default-features = false }

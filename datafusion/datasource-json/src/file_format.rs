@@ -30,15 +30,20 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::json;
 use arrow::json::reader::{ValueIter, infer_json_schema_from_iterator};
-use bytes::{Buf, Bytes};
+use bytes::Buf;
+#[cfg(not(target_arch = "wasm32"))]
+use bytes::Bytes;
 use datafusion_common::config::{ConfigField, ConfigFileType, JsonOptions};
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_common::file_options::json_writer::JsonWriterOptions;
 use datafusion_common::{
     DEFAULT_JSON_EXTENSION, GetExt, Result, Statistics, not_impl_err,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_common_runtime::SpawnedTask;
 use datafusion_datasource::TableSchema;
 use datafusion_datasource::decoder::Decoder;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::display::FileGroupDisplay;
 use datafusion_datasource::file::FileSource;
 use datafusion_datasource::file_compression_type::FileCompressionType;
@@ -46,16 +51,26 @@ use datafusion_datasource::file_format::{
     DEFAULT_SCHEMA_INFER_MAX_RECORD, FileFormat, FileFormatFactory,
 };
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::file_sink_config::{FileSink, FileSinkConfig};
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::sink::{DataSink, DataSinkExec};
 use datafusion_datasource::source::DataSourceExec;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::write::BatchSerializer;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::write::demux::DemuxedStreamReceiver;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_datasource::write::orchestration::spawn_writer_tasks_and_join;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_expr::dml::InsertOp;
+#[cfg(not(target_arch = "wasm32"))]
 use datafusion_physical_expr_common::sort_expr::LexRequirement;
-use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
+use datafusion_physical_plan::ExecutionPlan;
+#[cfg(not(target_arch = "wasm32"))]
+use datafusion_physical_plan::{DisplayAs, DisplayFormatType};
 use datafusion_session::Session;
 
 use crate::utils::JsonArrayToNdjsonReader;
@@ -258,6 +273,10 @@ impl FileFormat for JsonFormat {
         store: &Arc<dyn ObjectStore>,
         objects: &[ObjectMeta],
     ) -> Result<SchemaRef> {
+        #[cfg(target_arch = "wasm32")]
+        if !self.options.newline_delimited {
+            return not_impl_err!("JSON arrays require the native runtime");
+        }
         let mut schemas = Vec::new();
         let mut records_to_read = self
             .options
@@ -354,6 +373,7 @@ impl FileFormat for JsonFormat {
         Ok(DataSourceExec::from_data_source(conf))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn create_writer_physical_plan(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -380,216 +400,226 @@ impl FileFormat for JsonFormat {
     }
 }
 
-impl Default for JsonSerializer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Define a struct for serializing Json records to a stream
-pub struct JsonSerializer {}
-
-impl JsonSerializer {
-    /// Constructor for the JsonSerializer object
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl BatchSerializer for JsonSerializer {
-    fn serialize(&self, batch: RecordBatch, _initial: bool) -> Result<Bytes> {
-        let mut buffer = Vec::with_capacity(4096);
-        let mut writer = json::LineDelimitedWriter::new(&mut buffer);
-        writer.write(&batch)?;
-        Ok(Bytes::from(buffer))
-    }
-}
-
-/// Implements [`DataSink`] for writing to a Json file.
-pub struct JsonSink {
-    /// Config options for writing data
-    config: FileSinkConfig,
-    /// Writer options for underlying Json writer
-    writer_options: JsonWriterOptions,
-}
-
-impl Debug for JsonSink {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JsonSink").finish()
-    }
-}
-
-impl DisplayAs for JsonSink {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "JsonSink(file_groups=",)?;
-                FileGroupDisplay(&self.config.file_group).fmt_as(t, f)?;
-                write!(f, ")")
-            }
-            DisplayFormatType::TreeRender => {
-                writeln!(f, "format: json")?;
-                write!(f, "file={}", self.config.original_url)
-            }
-        }
-    }
-}
-
-impl JsonSink {
-    /// Create from config.
-    pub fn new(config: FileSinkConfig, writer_options: JsonWriterOptions) -> Self {
-        Self {
-            config,
-            writer_options,
+#[cfg(not(target_arch = "wasm32"))]
+mod native_sink {
+    use super::*;
+    impl Default for JsonSerializer {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
-    /// Retrieve the writer options
-    pub fn writer_options(&self) -> &JsonWriterOptions {
-        &self.writer_options
-    }
-}
+    /// Define a struct for serializing Json records to a stream
+    pub struct JsonSerializer {}
 
-#[async_trait]
-impl FileSink for JsonSink {
-    fn config(&self) -> &FileSinkConfig {
-        &self.config
+    impl JsonSerializer {
+        /// Constructor for the JsonSerializer object
+        pub fn new() -> Self {
+            Self {}
+        }
     }
 
-    async fn spawn_writer_tasks_and_join(
-        &self,
-        context: &Arc<TaskContext>,
-        demux_task: SpawnedTask<Result<()>>,
-        file_stream_rx: DemuxedStreamReceiver,
-        object_store: Arc<dyn ObjectStore>,
-    ) -> Result<u64> {
-        let serializer = Arc::new(JsonSerializer::new()) as _;
-        spawn_writer_tasks_and_join(
-            context,
-            serializer,
-            self.writer_options.compression.into(),
-            self.writer_options.compression_level,
-            object_store,
-            demux_task,
-            file_stream_rx,
-        )
-        .await
-    }
-}
-
-#[async_trait]
-impl DataSink for JsonSink {
-    fn schema(&self) -> &SchemaRef {
-        self.config.output_schema()
+    impl BatchSerializer for JsonSerializer {
+        fn serialize(&self, batch: RecordBatch, _initial: bool) -> Result<Bytes> {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut writer = json::LineDelimitedWriter::new(&mut buffer);
+            writer.write(&batch)?;
+            Ok(Bytes::from(buffer))
+        }
     }
 
-    async fn write_all(
-        &self,
-        data: SendableRecordBatchStream,
-        context: &Arc<TaskContext>,
-    ) -> Result<u64> {
-        FileSink::write_all(self, data, context).await
+    /// Implements [`DataSink`] for writing to a Json file.
+    pub struct JsonSink {
+        /// Config options for writing data
+        config: FileSinkConfig,
+        /// Writer options for underlying Json writer
+        writer_options: JsonWriterOptions,
+    }
+
+    impl Debug for JsonSink {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("JsonSink").finish()
+        }
+    }
+
+    impl DisplayAs for JsonSink {
+        fn fmt_as(
+            &self,
+            t: DisplayFormatType,
+            f: &mut fmt::Formatter<'_>,
+        ) -> fmt::Result {
+            match t {
+                DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                    write!(f, "JsonSink(file_groups=",)?;
+                    FileGroupDisplay(&self.config.file_group).fmt_as(t, f)?;
+                    write!(f, ")")
+                }
+                DisplayFormatType::TreeRender => {
+                    writeln!(f, "format: json")?;
+                    write!(f, "file={}", self.config.original_url)
+                }
+            }
+        }
+    }
+
+    impl JsonSink {
+        /// Create from config.
+        pub fn new(config: FileSinkConfig, writer_options: JsonWriterOptions) -> Self {
+            Self {
+                config,
+                writer_options,
+            }
+        }
+
+        /// Retrieve the writer options
+        pub fn writer_options(&self) -> &JsonWriterOptions {
+            &self.writer_options
+        }
+    }
+
+    #[async_trait]
+    impl FileSink for JsonSink {
+        fn config(&self) -> &FileSinkConfig {
+            &self.config
+        }
+
+        async fn spawn_writer_tasks_and_join(
+            &self,
+            context: &Arc<TaskContext>,
+            demux_task: SpawnedTask<Result<()>>,
+            file_stream_rx: DemuxedStreamReceiver,
+            object_store: Arc<dyn ObjectStore>,
+        ) -> Result<u64> {
+            let serializer = Arc::new(JsonSerializer::new()) as _;
+            spawn_writer_tasks_and_join(
+                context,
+                serializer,
+                self.writer_options.compression.into(),
+                self.writer_options.compression_level,
+                object_store,
+                demux_task,
+                file_stream_rx,
+            )
+            .await
+        }
+    }
+
+    #[async_trait]
+    impl DataSink for JsonSink {
+        fn schema(&self) -> &SchemaRef {
+            self.config.output_schema()
+        }
+
+        async fn write_all(
+            &self,
+            data: SendableRecordBatchStream,
+            context: &Arc<TaskContext>,
+        ) -> Result<u64> {
+            FileSink::write_all(self, data, context).await
+        }
+
+        #[cfg(feature = "proto")]
+        fn try_to_proto(
+            &self,
+            exec: &DataSinkExec,
+            ctx: &datafusion_physical_plan::proto::ExecutionPlanEncodeCtx<'_>,
+        ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
+            use datafusion_proto_models::protobuf;
+            use protobuf::physical_plan_node::PhysicalPlanType;
+
+            let input = ctx.encode_child(exec.input())?;
+            let sort_order = exec.encode_sort_order(ctx)?;
+            let sink = protobuf::JsonSink::try_from(self)?;
+            let node = protobuf::JsonSinkExecNode {
+                input: Some(Box::new(input)),
+                sink: Some(sink),
+                sink_schema: Some(exec.schema().as_ref().try_into()?),
+                sort_order,
+            };
+            Ok(Some(protobuf::PhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::JsonSink(Box::new(node))),
+            }))
+        }
     }
 
     #[cfg(feature = "proto")]
-    fn try_to_proto(
-        &self,
-        exec: &DataSinkExec,
-        ctx: &datafusion_physical_plan::proto::ExecutionPlanEncodeCtx<'_>,
-    ) -> Result<Option<datafusion_proto_models::protobuf::PhysicalPlanNode>> {
-        use datafusion_proto_models::protobuf;
-        use protobuf::physical_plan_node::PhysicalPlanType;
+    impl TryFrom<&JsonSink> for datafusion_proto_models::protobuf::JsonSink {
+        type Error = datafusion_common::DataFusionError;
 
-        let input = ctx.encode_child(exec.input())?;
-        let sort_order = exec.encode_sort_order(ctx)?;
-        let sink = protobuf::JsonSink::try_from(self)?;
-        let node = protobuf::JsonSinkExecNode {
-            input: Some(Box::new(input)),
-            sink: Some(sink),
-            sink_schema: Some(exec.schema().as_ref().try_into()?),
-            sort_order,
-        };
-        Ok(Some(protobuf::PhysicalPlanNode {
-            physical_plan_type: Some(PhysicalPlanType::JsonSink(Box::new(node))),
-        }))
+        fn try_from(value: &JsonSink) -> Result<Self> {
+            Ok(Self {
+                config: Some(value.config().try_into()?),
+                writer_options: Some(value.writer_options().try_into()?),
+            })
+        }
     }
-}
 
-#[cfg(feature = "proto")]
-impl TryFrom<&JsonSink> for datafusion_proto_models::protobuf::JsonSink {
-    type Error = datafusion_common::DataFusionError;
+    #[cfg(feature = "proto")]
+    impl TryFrom<&datafusion_proto_models::protobuf::JsonSink> for JsonSink {
+        type Error = datafusion_common::DataFusionError;
 
-    fn try_from(value: &JsonSink) -> Result<Self> {
-        Ok(Self {
-            config: Some(value.config().try_into()?),
-            writer_options: Some(value.writer_options().try_into()?),
-        })
+        fn try_from(value: &datafusion_proto_models::protobuf::JsonSink) -> Result<Self> {
+            let config =
+                FileSinkConfig::try_from(value.config.as_ref().ok_or_else(|| {
+                    datafusion_common::internal_datafusion_err!(
+                        "JsonSink is missing required field 'config'"
+                    )
+                })?)?;
+            let writer_options = value
+                .writer_options
+                .as_ref()
+                .ok_or_else(|| {
+                    datafusion_common::internal_datafusion_err!(
+                        "JsonSink is missing required field 'writer_options'"
+                    )
+                })?
+                .try_into()?;
+
+            Ok(Self::new(config, writer_options))
+        }
     }
-}
 
-#[cfg(feature = "proto")]
-impl TryFrom<&datafusion_proto_models::protobuf::JsonSink> for JsonSink {
-    type Error = datafusion_common::DataFusionError;
+    #[cfg(feature = "proto")]
+    impl JsonSink {
+        /// Reconstructs a [`DataSinkExec`] containing a `JsonSink` from protobuf.
+        pub fn try_from_proto(
+            node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
+            ctx: &datafusion_physical_plan::proto::ExecutionPlanDecodeCtx<'_>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            use datafusion_proto_models::protobuf;
 
-    fn try_from(value: &datafusion_proto_models::protobuf::JsonSink) -> Result<Self> {
-        let config =
-            FileSinkConfig::try_from(value.config.as_ref().ok_or_else(|| {
+            let sink_node = datafusion_physical_plan::expect_plan_variant!(
+                node,
+                protobuf::physical_plan_node::PhysicalPlanType::JsonSink,
+                "JsonSink",
+            );
+            let input = ctx.decode_required_child(
+                sink_node.input.as_deref(),
+                "JsonSinkExecNode",
+                "input",
+            )?;
+            let proto_sink = sink_node.sink.as_ref().ok_or_else(|| {
                 datafusion_common::internal_datafusion_err!(
-                    "JsonSink is missing required field 'config'"
+                    "JsonSinkExecNode is missing required field 'sink'"
                 )
-            })?)?;
-        let writer_options = value
-            .writer_options
-            .as_ref()
-            .ok_or_else(|| {
-                datafusion_common::internal_datafusion_err!(
-                    "JsonSink is missing required field 'writer_options'"
-                )
-            })?
-            .try_into()?;
+            })?;
+            let data_sink = JsonSink::try_from(proto_sink)?;
+            let sort_order = DataSinkExec::decode_sort_order(
+                sink_node.sort_order.as_ref(),
+                ctx,
+                input.schema().as_ref(),
+            )?;
 
-        Ok(Self::new(config, writer_options))
+            Ok(Arc::new(DataSinkExec::new(
+                input,
+                Arc::new(data_sink),
+                sort_order,
+            )))
+        }
     }
 }
-
-#[cfg(feature = "proto")]
-impl JsonSink {
-    /// Reconstructs a [`DataSinkExec`] containing a `JsonSink` from protobuf.
-    pub fn try_from_proto(
-        node: &datafusion_proto_models::protobuf::PhysicalPlanNode,
-        ctx: &datafusion_physical_plan::proto::ExecutionPlanDecodeCtx<'_>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        use datafusion_proto_models::protobuf;
-
-        let sink_node = datafusion_physical_plan::expect_plan_variant!(
-            node,
-            protobuf::physical_plan_node::PhysicalPlanType::JsonSink,
-            "JsonSink",
-        );
-        let input = ctx.decode_required_child(
-            sink_node.input.as_deref(),
-            "JsonSinkExecNode",
-            "input",
-        )?;
-        let proto_sink = sink_node.sink.as_ref().ok_or_else(|| {
-            datafusion_common::internal_datafusion_err!(
-                "JsonSinkExecNode is missing required field 'sink'"
-            )
-        })?;
-        let data_sink = JsonSink::try_from(proto_sink)?;
-        let sort_order = DataSinkExec::decode_sort_order(
-            sink_node.sort_order.as_ref(),
-            ctx,
-            input.schema().as_ref(),
-        )?;
-
-        Ok(Arc::new(DataSinkExec::new(
-            input,
-            Arc::new(data_sink),
-            sort_order,
-        )))
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_sink::{JsonSerializer, JsonSink};
 
 #[derive(Debug)]
 pub struct JsonDecoder {

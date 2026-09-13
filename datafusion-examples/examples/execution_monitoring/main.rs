@@ -42,9 +42,9 @@ mod tracing;
 
 use datafusion::error::{DataFusionError, Result};
 use strum::{IntoEnumIterator, VariantNames};
-use strum_macros::{Display, EnumIter, EnumString, VariantNames};
+use strum_macros::{Display, EnumIter, EnumString};
 
-#[derive(EnumIter, EnumString, Display, VariantNames)]
+#[derive(EnumIter, EnumString, Display, strum_macros::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 enum ExampleKind {
     All,

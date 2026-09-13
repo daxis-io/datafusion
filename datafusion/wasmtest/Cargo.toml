@@ -44,7 +44,12 @@ crate-type = ["cdylib", "rlib"]
 name = "narrow_query"
 required-features = ["narrow-kernel-query"]
 
+[[example]]
+name = "delta_query"
+required-features = ["narrow-delta-query"]
+
 [features]
+narrow-delta-query = ["narrow-kernel-query", "dep:deltalake-browser", "datafusion_executor/qualification-fixture", "dep:url"]
 default = []
 narrow-kernel-query = ["exact-stack-parquet", "dep:datafusion_executor", "dep:delta_kernel"]
 console_error_panic_hook = ["dep:console_error_panic_hook"]
@@ -58,6 +63,8 @@ exact-stack-parquet = [
 ]
 
 [dependencies]
+url = { workspace = true, optional = true }
+deltalake-browser = { version = "0.1.0", default-features = false, optional = true }
 datafusion_executor = { version = "0.26.0", optional = true }
 delta_kernel = { version = "0.28.0", default-features = false, optional = true }
 async-trait = { workspace = true }

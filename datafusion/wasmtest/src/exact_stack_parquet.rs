@@ -721,3 +721,11 @@ fn error_chain_downcast<'a, T: std::error::Error + 'static>(
     }
     None
 }
+
+#[cfg(feature = "narrow-delta-query")]
+#[path = "delta_query.rs"]
+mod phase_d;
+#[cfg(feature = "narrow-delta-query")]
+pub async fn delta_query() -> Result<serde_json::Value> {
+    Box::pin(phase_d::qualify()).await
+}

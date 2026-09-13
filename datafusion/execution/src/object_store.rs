@@ -56,9 +56,14 @@ impl ObjectStoreUrl {
     /// assert_eq!(url.path(), "/");
     /// ```
     pub fn parse(s: impl AsRef<str>) -> Result<Self> {
-        let mut parsed =
+        let parsed =
             Url::parse(s.as_ref()).map_err(|e| DataFusionError::External(Box::new(e)))?;
+        Self::try_from_url(parsed)
+    }
 
+    /// Validates an already parsed URL containing only scheme and authority.
+    /// This preserves its canonical host without parsing or normalizing it again.
+    pub fn try_from_url(mut parsed: Url) -> Result<Self> {
         let remaining = &parsed[url::Position::BeforePath..];
         if !remaining.is_empty() && remaining != "/" {
             return exec_err!(

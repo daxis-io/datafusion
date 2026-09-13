@@ -333,81 +333,90 @@ impl AggregateStream {
             agg_dyn_filter_state: maybe_dynamic_filter,
         };
 
-        let stream = futures::stream::unfold(inner, |mut this| async move {
-            if this.finished {
-                return None;
-            }
-
-            loop {
-                let result = match this.input.next().await {
-                    Some(Ok(batch)) => {
-                        let result = {
-                            let elapsed_compute = this.baseline_metrics.elapsed_compute();
-                            let _timer = elapsed_compute.timer(); // Stops on drop
-                            aggregate_batch(
-                                &this.mode,
-                                &batch,
-                                &mut this.accumulators,
-                                &this.aggregate_expressions,
-                                &this.filter_expressions,
-                            )
-                        };
-
-                        let result = result.and_then(|allocated| {
-                            this.maybe_update_dyn_filter()?;
-                            Ok(allocated)
-                        });
-
-                        // allocate memory
-                        // This happens AFTER we actually used the memory, but simplifies the whole accounting and we are OK with
-                        // overshooting a bit. Also this means we either store the whole record batch or not.
-                        match result
-                            .and_then(|allocated| this.reservation.try_grow(allocated))
-                        {
-                            Ok(_) => continue,
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Some(Err(e)) => Err(e),
-                    None => {
-                        this.finished = true;
-                        // Release the input pipeline's resources before finalization.
-                        let input_schema = this.input.schema();
-                        this.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
-                        let timer = this.baseline_metrics.elapsed_compute().timer();
-                        let result =
-                            finalize_aggregation(&mut this.accumulators, &this.mode)
-                                .and_then(|columns| {
-                                    prepend_grouping_id_column(columns, None)
-                                })
-                                .and_then(|columns| {
-                                    RecordBatch::try_new(
-                                        Arc::clone(&this.schema),
-                                        columns,
-                                    )
-                                    .map_err(Into::into)
-                                })
-                                .record_output(&this.baseline_metrics);
-
-                        timer.done();
-
-                        result
-                    }
-                };
-
-                this.finished = true;
-                return Some((result, this));
-            }
-        });
+        let stream = aggregate_stream(inner);
 
         // seems like some consumers call this stream even after it returned `None`, so let's fuse the stream.
-        let stream = stream.fuse();
         let stream = Box::pin(stream);
 
         Ok(Self {
             schema: agg_schema,
             stream,
         })
+    }
+}
+
+fn aggregate_stream(
+    inner: AggregateStreamInner,
+) -> impl Stream<Item = Result<RecordBatch>> + Send {
+    futures::stream::unfold(inner, |mut this| async move {
+        if this.finished {
+            return None;
+        }
+
+        loop {
+            let result = match this.input.next().await {
+                Some(Ok(batch)) => {
+                    let result = {
+                        let elapsed_compute = this.baseline_metrics.elapsed_compute();
+                        let _timer = elapsed_compute.timer(); // Stops on drop
+                        aggregate_batch(
+                            &this.mode,
+                            &batch,
+                            &mut this.accumulators,
+                            &this.aggregate_expressions,
+                            &this.filter_expressions,
+                        )
+                    };
+
+                    let result = result.and_then(|allocated| {
+                        this.maybe_update_dyn_filter()?;
+                        Ok(allocated)
+                    });
+
+                    // allocate memory
+                    // This happens AFTER we actually used the memory, but simplifies the whole accounting and we are OK with
+                    // overshooting a bit. Also this means we either store the whole record batch or not.
+                    match result
+                        .and_then(|allocated| this.reservation.try_grow(allocated))
+                    {
+                        Ok(_) => continue,
+                        Err(e) => Err(e),
+                    }
+                }
+                Some(Err(e)) => Err(e),
+                None => {
+                    this.finished = true;
+                    // Release the input pipeline's resources before finalization.
+                    let input_schema = this.input.schema();
+                    this.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
+                    let timer = this.baseline_metrics.elapsed_compute().timer();
+                    let result = finalize_aggregation(&mut this.accumulators, &this.mode)
+                        .and_then(|columns| prepend_grouping_id_column(columns, None))
+                        .and_then(|columns| {
+                            RecordBatch::try_new(Arc::clone(&this.schema), columns)
+                                .map_err(Into::into)
+                        })
+                        .record_output(&this.baseline_metrics);
+
+                    timer.done();
+
+                    result
+                }
+            };
+
+            this.finished = true;
+            return Some((result, this));
+        }
+    })
+    .fuse()
+}
+
+impl AggregateStream {
+    pub(super) fn inner_stream_layout() -> std::alloc::Layout {
+        fn layout<A, T>(_factory: impl FnOnce(A) -> T) -> std::alloc::Layout {
+            std::alloc::Layout::new::<T>()
+        }
+        layout(aggregate_stream)
     }
 }
 

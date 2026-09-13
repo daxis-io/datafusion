@@ -60,6 +60,21 @@ pub struct FileStream {
 }
 
 impl FileStream {
+    /// Frame layouts of the ordinary FileOpener-to-morsel adapter.
+    /// Other morselizer implementations have different owner requirements.
+    pub fn file_opener_adapter_layouts() -> [std::alloc::Layout; 6] {
+        crate::morsel::FileOpenerMorselizer::frame_layouts()
+    }
+
+    /// Compiler layouts of the stream and boxed scan state, excluding their
+    /// queued files, morsels, readers, metrics and other backing allocations.
+    pub fn frame_layouts() -> [std::alloc::Layout; 2] {
+        [
+            std::alloc::Layout::new::<Self>(),
+            std::alloc::Layout::new::<ScanState>(),
+        ]
+    }
+
     /// Create a new `FileStream` using the give `FileOpener` to scan underlying files
     #[deprecated(since = "54.0.0", note = "Use FileStreamBuilder instead")]
     pub fn new(
