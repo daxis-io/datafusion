@@ -4322,7 +4322,7 @@ dependencies = [
 [[package]]
 name = "object_store"
 version = "0.13.2"
-source = "git+https://github.com/daxis-io/arrow-rs-object-store?rev=ab9fda65805487edf5487e63082cab8111f0a178#ab9fda65805487edf5487e63082cab8111f0a178"
+source = "git+https://github.com/daxis-io/arrow-rs-object-store?rev=73f659ffe91e0798527fc8eadcd36caedcbd6f84#73f659ffe91e0798527fc8eadcd36caedcbd6f84"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
